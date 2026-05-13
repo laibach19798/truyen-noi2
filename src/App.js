@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles } from 'lucide-react';
 
 // 🔧 CẤU HÌNH: Thay URL Hugging Face Space của bạn ở đây
-const EDGE_TTS_API = 'https://Laibach-edge-tts-vietnamese.hf.space';
+const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
 
 export default function StoryListenerApp() {
   // STATE
