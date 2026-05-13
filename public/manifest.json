@@ -1,0 +1,9 @@
+{
+  "short_name": "Truyện Nói",
+  "name": "Truyện Nói - Nghe truyện AI",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#78350f",
+  "background_color": "#1e293b"
+}
