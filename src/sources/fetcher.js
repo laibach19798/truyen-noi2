@@ -21,12 +21,13 @@ const customProxyUrl = (template, url) => template.includes('{url}')
   : template + encodeURIComponent(url);
 
 const buildProxies = () => {
-  const list = [
-    { name: 'self', build: (u) => `/api/proxy?url=${encodeURIComponent(u)}`, requireHeader: true },
-  ];
+  const list = [];
+  // Proxy riêng do người dùng nhập (vd. Cloudflare Worker) được thử trước: nó tồn tại chính là vì
+  // nhiều trang chặn máy chủ của app.
   const custom = getCustomProxy();
   if (custom) list.push({ name: 'custom', build: (u) => customProxyUrl(custom, u) });
   list.push(
+    { name: 'self', build: (u) => `/api/proxy?url=${encodeURIComponent(u)}`, requireHeader: true },
     { name: 'allorigins', build: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
     { name: 'corsproxy', build: (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}` },
     { name: 'codetabs', build: (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` },
@@ -89,6 +90,9 @@ export async function fetchHtml(url, { signal } = {}) {
       if (e.name === 'AbortError' && signal?.aborted) throw e;
       errors.push(`${proxy.name}: ${e.message}`);
     }
+  }
+  if (errors.some((e) => /^(self|custom): HTTP 403/.test(e))) {
+    throw new Error('Trang này chặn máy chủ của app (HTTP 403) — thử thêm proxy riêng trong "Cài đặt nguồn & proxy"');
   }
   throw new Error(`Không tải được trang (${errors.join('; ')})`);
 }

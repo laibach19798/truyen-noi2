@@ -21,6 +21,12 @@ Trình duyệt không cho đọc HTML trang khác trực tiếp, nên app gọi 
 2. Proxy riêng do bạn nhập trong phần cài đặt (ví dụ một Cloudflare Worker).
 3. Các proxy công cộng (allorigins, corsproxy.io, codetabs) — không ổn định, chỉ là phương án dự phòng.
 
+Máy chủ của app chạy ở Singapore (`vercel.json` → `sin1`), gần Việt Nam hơn. Một số trang truyện vẫn chặn máy chủ Vercel (lỗi HTTP 403); khi đó dùng proxy riêng trên Cloudflare Workers (miễn phí, không cần thẻ) — proxy riêng được thử trước:
+
+1. Đăng ký https://dash.cloudflare.com → **Workers & Pages** → **Create** → **Create Worker**, đặt tên rồi **Deploy**.
+2. **Edit code**, dán toàn bộ nội dung `cloudflare/cors-proxy.js`, bấm **Deploy**.
+3. Trong app: "Cài đặt nguồn & proxy" → "Proxy CORS riêng", nhập `https://<tên-worker>.<tài-khoản>.workers.dev/?url={url}`.
+
 ## Giọng đọc Edge TTS và dịch
 
 - `api/tts.py` và `api/translate.py` là hàm Python chạy trên Vercel (thư viện `edge-tts` ghi trong `requirements.txt`). Từ 10/2026 Microsoft chỉ nhận `edge-tts` >= 7.3.0, bản cũ bị lỗi 403.
