@@ -29,8 +29,7 @@ export function htmlToText(el) {
   root.querySelectorAll?.(JUNK_SELECTOR).forEach((n) => n.remove());
   let out = '';
   const walk = (node) => {
-    // Bỏ ký tự vô hình (zero-width) mà nhiều trang chèn làm dấu chống sao chép.
-    if (node.nodeType === 3) { out += node.nodeValue.replace(/[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/g, '').replace(/\s+/g, ' '); return; }
+    if (node.nodeType === 3) { out += node.nodeValue.replace(/\s+/g, ' '); return; }
     if (node.nodeType !== 1 || SKIP_TAGS.has(node.tagName)) return;
     if (node.tagName === 'BR') { out += '\n'; return; }
     const block = BLOCK_TAGS.has(node.tagName);

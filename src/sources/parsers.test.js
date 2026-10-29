@@ -148,8 +148,3 @@ test('kết quả tìm kiếm TruyệnFull bỏ khung truyện hot bên cạnh',
   expect(results).toHaveLength(1);
   expect(results[0]).toMatchObject({ title: 'Tiên Nghịch Chi Hậu', author: 'Trần Mộc', cover: 'https://img.example/a.jpg' });
 });
-
-test('bỏ ký tự vô hình chống sao chép', () => {
-  const doc = parseHtml('<div id="x"><p>bát‍​‌‌ngát﻿ mênh­mông</p></div>');
-  expect(htmlToText(doc.querySelector('#x'))).toBe('bátngát mênhmông');
-});

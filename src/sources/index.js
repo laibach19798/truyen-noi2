@@ -1,5 +1,4 @@
 import { fetchHtml, mapLimit } from './fetcher';
-import { buildQuery, rankResults, parseDuckDuckGo } from './webSearchParse';
 import { parseHtml, pickAdapter, truyenfullAdapter, normalizeOrder, fillSequentialChapters } from './parsers';
 
 export { getCustomProxy, setCustomProxy } from './fetcher';
@@ -87,24 +86,10 @@ export async function searchStories(query, origin) {
 }
 
 // Tìm trên toàn web qua /api/search (Brave Search hoặc DuckDuckGo). type: 'story' | 'author'.
-// Nếu máy chủ của app bị chặn (DuckDuckGo hay chặn máy chủ Vercel) thì lấy trang kết quả
-// DuckDuckGo qua chuỗi proxy của app — trong đó có proxy riêng (Cloudflare Worker) nếu có.
 export async function searchWeb(query, type = 'story') {
-  let serverError;
-  try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&type=${type}`);
-    if (!res.headers.get('x-truyen-proxy')) throw new Error('cần chạy app trên Vercel hoặc npm run serve');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    return data;
-  } catch (e) {
-    serverError = e;
-  }
-  try {
-    const q = encodeURIComponent(buildQuery(query, type));
-    const { html } = await fetchHtml(`https://html.duckduckgo.com/html/?q=${q}&kl=vn-vi`);
-    const results = rankResults(parseDuckDuckGo(html));
-    if (results.length) return { provider: 'duckduckgo', results };
-  } catch (e) {}
-  throw serverError;
+  const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&type=${type}`);
+  if (!res.headers.get('x-truyen-proxy')) throw new Error('cần chạy app trên Vercel hoặc npm run serve');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 }
