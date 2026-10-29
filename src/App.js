@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, searchWeb, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -88,7 +88,6 @@ export default function StoryListenerApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
   const [isSearching, setIsSearching] = useState(false);
-  const [searchType, setSearchType] = useState('story');
   const [searchOrigin, setSearchOrigin] = useState(() => localStorage.getItem('searchOrigin') || DEFAULT_SEARCH_ORIGIN);
   const [customProxy, setCustomProxyState] = useState(getCustomProxy);
   const [showSourceSettings, setShowSourceSettings] = useState(false);
@@ -678,16 +677,11 @@ export default function StoryListenerApp() {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     setErrorMsg('');
-    const q = searchQuery.trim();
-    // Tìm song song: trên trang truyện (giao diện TruyệnFull) và trên toàn web.
-    const [site, web] = await Promise.allSettled([searchStories(q, searchOrigin), searchWeb(q, searchType)]);
-    setSearchResults({
-      site: site.status === 'fulfilled' ? site.value : [],
-      siteError: site.status === 'rejected' ? site.reason.message : '',
-      web: web.status === 'fulfilled' ? web.value.results : [],
-      webProvider: web.status === 'fulfilled' ? web.value.provider : '',
-      webError: web.status === 'rejected' ? web.reason.message : '',
-    });
+    try {
+      setSearchResults(await searchStories(searchQuery.trim(), searchOrigin));
+    } catch (error) {
+      setErrorMsg('Tìm kiếm thất bại: ' + error.message);
+    }
     setIsSearching(false);
   };
 
@@ -1155,17 +1149,9 @@ export default function StoryListenerApp() {
               <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
                 <Search className="w-5 h-5" /> Tìm truyện
               </h2>
-              <div className="flex gap-2 mb-2">
-                {[['story', '📖 Tên truyện'], ['author', '✍️ Tác giả']].map(([type, label]) => (
-                  <button key={type} onClick={() => setSearchType(type)}
-                    className={`flex-1 py-1.5 rounded-lg text-sm ${searchType === type ? theme.buttonPrimary : theme.button}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
               <div className="flex gap-2">
                 <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={searchType === 'author' ? 'Tên tác giả...' : 'Tên truyện...'}
+                  placeholder="Tên truyện hoặc tác giả..."
                   className={`flex-1 min-w-0 px-4 py-3 rounded-xl ${theme.input} border focus:outline-none focus:ring-2 focus:ring-amber-500`}
                   onKeyDown={(e) => e.key === 'Enter' && runSearch()} />
                 <button onClick={runSearch} disabled={isSearching}
@@ -1174,43 +1160,20 @@ export default function StoryListenerApp() {
                 </button>
               </div>
               {searchResults && (
-                <div className="mt-3 max-h-[28rem] overflow-y-auto space-y-4">
-                  <div>
-                    <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>📚 Trên TruyệnFull ({searchResults.site.length})</p>
-                    {searchResults.siteError && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {searchResults.siteError}</p>}
-                    {!searchResults.siteError && searchResults.site.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
-                    <div className="space-y-2">
-                      {searchResults.site.map((r) => (
-                        <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
-                          className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
-                          {r.cover
-                            ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
-                            : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate">{r.title}</div>
-                            <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>
-                      🌐 Trên web ({searchResults.web.length}){searchResults.webProvider && ` • ${searchResults.webProvider === 'brave' ? 'Brave Search' : 'DuckDuckGo'}`}
-                    </p>
-                    {searchResults.webError && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {searchResults.webError}</p>}
-                    {!searchResults.webError && searchResults.web.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
-                    <div className="space-y-2">
-                      {searchResults.web.map((r) => (
-                        <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
-                          className={`w-full text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
-                          <div className="font-semibold text-sm line-clamp-2">{r.title}</div>
-                          <div className={`text-xs ${theme.accent} truncate`}>{r.host}</div>
-                          {r.description && <div className={`text-xs ${theme.textMuted} line-clamp-2 mt-0.5`}>{r.description}</div>}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                <div className="mt-3 max-h-96 overflow-y-auto space-y-2">
+                  {searchResults.length === 0 && <p className={`text-sm ${theme.textMuted}`}>Không tìm thấy truyện nào trên TruyệnFull.</p>}
+                  {searchResults.map((r) => (
+                    <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
+                      className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {r.cover
+                        ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
+                        : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{r.title}</div>
+                        <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
+                      </div>
+                    </button>
+                  ))}
                   {isLoadingWeb && <p className={`text-xs ${theme.accent}`}>{loadProgress || 'Đang mở truyện...'}</p>}
                 </div>
               )}
