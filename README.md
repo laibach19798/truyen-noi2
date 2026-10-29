@@ -4,8 +4,10 @@ Web nghe truyện audio: lấy truyện từ các trang khác (hoặc từ file 
 
 ## Lấy truyện từ trang khác
 
-- **Tìm truyện**: tìm theo tên trên một trang dùng giao diện TruyệnFull (đổi tên miền trong "Cài đặt nguồn & proxy").
-- **Dán link trang truyện** (trang có mục lục): app tải toàn bộ danh sách chương (kể cả nhiều trang mục lục), nội dung từng chương chỉ được tải khi cần và tải trước chương kế tiếp.
+- **Tìm truyện** theo tên truyện hoặc tác giả, cùng lúc ở hai nơi:
+  - trên một trang dùng giao diện TruyệnFull (đổi tên miền trong "Cài đặt nguồn & proxy");
+  - trên toàn web qua `api/search.js`: dùng Brave Search API nếu có biến môi trường `BRAVE_API_KEY` (gói miễn phí tại https://api-dashboard.search.brave.com), không có thì dùng DuckDuckGo. Google đã ngừng cấp API tìm kiếm cho người dùng mới nên không dùng được.
+- **Dán link trang truyện** (trang có mục lục): app tải toàn bộ danh sách chương (kể cả nhiều trang mục lục), nội dung từng chương chỉ được tải khi cần và tải trước chương kế tiếp. Trang chỉ hiện vài chương nhưng link có dạng `/chuong-N` thì app tự dựng đủ mục lục.
 - **Dán link một chương** bất kỳ: app tìm phần nội dung chính và lần theo nút "Chương sau" để đọc nối tiếp.
 - **Tủ truyện**: truyện đã mở và chương đang nghe được lưu trong trình duyệt để nghe tiếp.
 

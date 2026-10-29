@@ -1,5 +1,5 @@
 import { fetchHtml, mapLimit } from './fetcher';
-import { parseHtml, pickAdapter, truyenfullAdapter, normalizeOrder } from './parsers';
+import { parseHtml, pickAdapter, truyenfullAdapter, normalizeOrder, fillSequentialChapters } from './parsers';
 
 export { getCustomProxy, setCustomProxy } from './fetcher';
 
@@ -23,7 +23,7 @@ export async function loadFromUrl(rawUrl, { onProgress, signal } = {}) {
     if (info.pageUrls.length) {
       let done = 0;
       onProgress?.(`Đang tải mục lục 1/${info.pageUrls.length + 1}...`);
-      const pages = await mapLimit(info.pageUrls, 4, async (pageUrl) => {
+      const pages = await mapLimit(info.pageUrls, 8, async (pageUrl) => {
         try {
           const page = await fetchHtml(pageUrl, { signal });
           return adapter.parseChapterList(parseHtml(page.html), page.url);
@@ -37,11 +37,12 @@ export async function loadFromUrl(rawUrl, { onProgress, signal } = {}) {
       chapters = chapters.concat(...pages);
     }
     const seen = new Set();
-    chapters = normalizeOrder(chapters.filter((c) => !seen.has(c.url) && seen.add(c.url)));
+    // Trang mục lục nào tải lỗi thì lấp chỗ trống theo dạng /chuong-N.
+    chapters = fillSequentialChapters(normalizeOrder(chapters.filter((c) => !seen.has(c.url) && seen.add(c.url))));
     if (!chapters.length) throw new Error('Không tìm thấy danh sách chương');
     return {
       story: { title: info.title, author: info.author, cover: info.cover, description: info.description, sourceUrl: finalUrl, mode: 'index', site: adapter.name },
-      chapters: chapters.map((c) => ({ title: c.title, url: c.url })),
+      chapters: chapters.map((c) => ({ title: c.title, url: c.url, ...(c.synthetic && { synthetic: true }) })),
     };
   }
 
@@ -82,4 +83,13 @@ export async function searchStories(query, origin = DEFAULT_SEARCH_ORIGIN) {
   const base = (/^https?:\/\//i.test(origin) ? origin : `https://${origin}`).replace(/\/+$/, '');
   const { html, url } = await fetchHtml(truyenfullAdapter.searchUrl(base, query));
   return truyenfullAdapter.parseSearch(parseHtml(html), url);
+}
+
+// Tìm trên toàn web qua /api/search (Brave Search hoặc DuckDuckGo). type: 'story' | 'author'.
+export async function searchWeb(query, type = 'story') {
+  const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&type=${type}`);
+  if (!res.headers.get('x-truyen-proxy')) throw new Error('cần chạy app trên Vercel hoặc npm run serve');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 }
