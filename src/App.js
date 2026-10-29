@@ -694,7 +694,10 @@ export default function StoryListenerApp() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.substring(0, 5000), voice: voiceGender, rate: rateStr })
     });
-    if (!response.ok) throw new Error('TTS error');
+    if (!response.ok) {
+      const detail = await response.json().then(d => d.error).catch(() => '');
+      throw new Error(`HTTP ${response.status}${detail ? ` - ${detail.slice(0, 120)}` : ''}`);
+    }
     
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -862,7 +865,8 @@ export default function StoryListenerApp() {
       } catch (error) {
         setIsLoadingAudio(false);
         setIsPlaying(false);
-        setErrorMsg('Lỗi Edge TTS, chuyển sang giọng nhanh');
+        console.error('Edge TTS error:', error);
+        setErrorMsg(`Lỗi Edge TTS (${error.message}), tạm chuyển sang giọng nhanh`);
         setTimeout(() => {
           setTtsMode('web');
           playChunkWebSpeech(chapterIdx, chunkIdx);
