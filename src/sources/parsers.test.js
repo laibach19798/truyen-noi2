@@ -1,4 +1,4 @@
-import { parseHtml, pickAdapter, truyenfullAdapter, genericAdapter, chapterNumber, htmlToText } from './parsers';
+import { parseHtml, pickAdapter, truyenfullAdapter, genericAdapter, chapterNumber, htmlToText, fillSequentialChapters, normalizeOrder } from './parsers';
 
 const STORY_URL = 'https://truyenfull.example/tien-nghich/';
 
@@ -109,4 +109,42 @@ test('số chương tiếng Việt, tiếng Anh, tiếng Trung', () => {
 test('htmlToText giữ ngắt đoạn', () => {
   const doc = parseHtml('<div id="x"><p>Một</p><p>Hai <b>ba</b></p>Bốn<br>Năm</div>');
   expect(htmlToText(doc.querySelector('#x'))).toBe('Một\n\nHai ba\n\nBốn\n\nNăm');
+});
+
+test('dựng lại đủ mục lục khi trang chỉ hiện vài chương /chuong-N', () => {
+  const doc = parseHtml(`<a href="/truyen/abc/chuong-1">Đọc từ đầu</a><a href="/truyen/abc/chuong-500">Chương mới nhất</a>
+    <a href="/truyen/abc/chuong-500"></a><a href="/truyen/abc/chuong-499"></a><a href="/truyen/abc/chuong-2">Chương 2: Tên thật</a>`);
+  const list = genericAdapter.parseChapterList(doc, 'https://abc.example/truyen/abc');
+  expect(list).toHaveLength(500);
+  expect(list[0]).toEqual({ title: 'Chương 1', url: 'https://abc.example/truyen/abc/chuong-1' });
+  expect(list[1].title).toBe('Chương 2: Tên thật');
+  expect(list[499].title).toBe('Chương 500');
+  expect(normalizeOrder(list)[0].title).toBe('Chương 1');
+  expect(list[249]).toEqual({ title: 'Chương 250', url: 'https://abc.example/truyen/abc/chuong-250', synthetic: true });
+  expect(fillSequentialChapters([{ title: 'Chương 1', url: 'https://x.example/a-hash' }])).toHaveLength(1);
+});
+
+test('bỏ dòng điều hướng lẫn trong nội dung chương', () => {
+  const doc = parseHtml('<div id="x"><p>← Chương trước | Chương sau →</p><p>Chương 2092 / 1,876</p><p>Hắn chưa từng nghĩ chương sau sẽ thế nào.</p></div>');
+  expect(htmlToText(doc.querySelector('#x'))).toBe('Hắn chưa từng nghĩ chương sau sẽ thế nào.');
+});
+
+test('phân trang /page/N và khung chương mới nhất lẫn trong mục lục', () => {
+  const doc = parseHtml(`<div id="list-chapter"><ul class="list-chapter">
+    <li><a href="/t/abc/chuong-99">Chương 99: Mới</a></li><li><a href="/t/abc/chuong-1">Chương 1: Đầu</a></li>
+    <li><a href="/t/abc/chuong-2">Chương 2</a></li></ul>
+    <ul class="pagination"><li><a href="https://s.example/t/abc/page/2">2</a></li><li><a href="https://s.example/t/abc/page/5">Cuối</a></li></ul></div>`);
+  const info = truyenfullAdapter.parseStory(doc, 'https://s.example/t/abc');
+  expect(info.pageUrls).toEqual([2, 3, 4, 5].map((n) => `https://s.example/t/abc/page/${n}`));
+  expect(info.chapters.map((c) => c.title)).toEqual(['Chương 99: Mới', 'Chương 1: Đầu', 'Chương 2']);
+  expect(normalizeOrder(info.chapters).map((c) => c.title)).toEqual(['Chương 1: Đầu', 'Chương 2', 'Chương 99: Mới']);
+});
+
+test('kết quả tìm kiếm TruyệnFull bỏ khung truyện hot bên cạnh', () => {
+  const doc = parseHtml(`<div class="list list-truyen col-xs-12">
+    <div class="row" itemscope><div data-image="https://img.example/a.jpg"></div><h3 class="truyen-title"><a href="https://tf.example/tien-nghich-chi-hau/">Tiên Nghịch Chi Hậu</a></h3><span class="author">Trần Mộc</span></div></div>
+    <div class="list list-truyen list-side col-xs-12"><div class="row top-item"><h3><a href="https://tf.example/than-dao/">Thần Đạo Đan Tôn</a></h3></div></div>`);
+  const results = truyenfullAdapter.parseSearch(doc, 'https://tf.example/tim-kiem/');
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({ title: 'Tiên Nghịch Chi Hậu', author: 'Trần Mộc', cover: 'https://img.example/a.jpg' });
 });

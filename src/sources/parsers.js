@@ -18,6 +18,10 @@ const JUNK_SELECTOR = '.ads, .ad, [class*="ads-"], [id*="ads"], .adsbygoogle, .c
 // Dòng quảng cáo/watermark hay chèn vào giữa chương.
 const JUNK_LINE = /(bạn đang đọc truyện|đọc truyện (online|chữ|full)|nguồn\s*:|truyenfull|tàng thư viện|metruyen|wikidich|truyện được (lấy|cập nhật)|www\.|https?:\/\/|\.com\b|\.vn\b|\.net\b)/i;
 
+// Dòng chỉ gồm nút điều hướng: "← Chương trước | Chương sau →", "Chương 12 / 1,876"...
+const NAV_PHRASES = /(chương\s*(trước|sau|tiếp|kế)|mục\s*lục|danh\s*sách\s*chương|báo\s*lỗi|chương\s*\d+\s*\/\s*[\d.,]+|[←→«»‹›|])/gi;
+const isNavLine = (line) => line.length < 120 && line.replace(NAV_PHRASES, '') !== line && !line.replace(NAV_PHRASES, '').replace(/[\s.:,-]/g, '');
+
 // Chuyển một phần tử HTML thành văn bản thuần, giữ ngắt đoạn.
 export function htmlToText(el) {
   if (!el) return '';
@@ -37,7 +41,7 @@ export function htmlToText(el) {
   return out
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l && !(l.length < 160 && JUNK_LINE.test(l)))
+    .filter((l) => l && !(l.length < 160 && JUNK_LINE.test(l)) && !isNavLine(l))
     .join('\n\n');
 }
 
@@ -60,6 +64,10 @@ export const chapterNumber = (title) => {
   return cn ? parseChineseNumber(cn[1]) : null;
 };
 
+// Link chương nhận ra qua đường dẫn: /chuong-12, /chapter-12, /chuong-12.html
+const CHAPTER_URL = /\/(?:chuong|chapter|chap)[-_](\d+)(?:[-_.][a-z0-9-]*)?\/?$/i;
+const CHAPTER_URL_PLAIN = /^(.*\/(?:chuong|chapter|chap)[-_])(\d+)(\/|\.html?)?$/i;
+
 const CHAPTER_LINK = /^\s*(chương|chuong|chapter|chap\b|ch\.\s*\d|hồi\s*\d|quyển|第\s*[\d零〇一二两三四五六七八九十百千万]+\s*[章节回])/i;
 const NEXT_LINK = /(chương|chap(ter)?)\s*(sau|tiếp|kế)|^\s*(next|tiếp|sau)\b|下一[章页节]|→|»|›/i;
 
@@ -68,10 +76,18 @@ const dedupeChapters = (list) => {
   return list.filter((c) => c.url && !seen.has(c.url) && seen.add(c.url));
 };
 
-// Nếu danh sách đang xếp chương mới nhất lên đầu thì đảo lại.
+// Sắp xếp chương tăng dần. Nếu số chương không trùng nhau (không chia quyển) thì sắp theo số
+// — gỡ được cả khung "chương mới nhất" lẫn vào mục lục; nếu không thì chỉ đảo khi mới-nhất-trước.
 export const normalizeOrder = (chapters) => {
-  const nums = chapters.map((c) => chapterNumber(c.title)).filter((n) => n !== null);
-  if (nums.length >= 2 && nums[0] > nums[nums.length - 1]) return [...chapters].reverse();
+  const nums = chapters.map((c) => chapterNumber(c.title));
+  const known = nums.filter((n) => n !== null);
+  if (known.length >= 2 && known.length >= chapters.length * 0.8 && new Set(known).size === known.length) {
+    return chapters
+      .map((c, i) => ({ c, i, n: nums[i] ?? -1 }))
+      .sort((a, b) => a.n - b.n || a.i - b.i)
+      .map(({ c }) => c);
+  }
+  if (known.length >= 2 && known[0] > known[known.length - 1]) return [...chapters].reverse();
   return chapters;
 };
 
@@ -81,6 +97,29 @@ const sameSite = (a, b) => {
 
 const metaContent = (doc, prop) =>
   doc.querySelector(`meta[property="${prop}"], meta[name="${prop}"]`)?.getAttribute('content') || '';
+
+// Nhiều trang chỉ hiện vài chương (mới nhất + đầu tiên) rồi tải phần còn lại bằng JS.
+// Nếu link có dạng .../chuong-N thì dựng lại đủ danh sách từ 1 tới số lớn nhất.
+const MAX_SYNTHETIC = 10000;
+export function fillSequentialChapters(chapters) {
+  const byNumber = new Map();
+  let prefix = null, suffix = '', max = 0;
+  for (const c of chapters) {
+    const m = c.url.replace(/[?#].*$/, '').match(CHAPTER_URL_PLAIN);
+    if (!m) continue;
+    if (prefix === null) { prefix = m[1]; suffix = m[3] || ''; }
+    if (m[1] !== prefix) continue;
+    const n = parseInt(m[2], 10);
+    if (!byNumber.has(n)) byNumber.set(n, c);
+    max = Math.max(max, n);
+  }
+  if (byNumber.size < 2 || max <= byNumber.size || max > MAX_SYNTHETIC) return chapters;
+  const list = [];
+  for (let n = 1; n <= max; n++) {
+    list.push(byNumber.get(n) || { title: `Chương ${n}`, url: `${prefix}${n}${suffix}`, synthetic: true });
+  }
+  return list;
+}
 
 // ---------------------------------------------------------------- TruyệnFull
 // Giao diện dùng chung bởi truyenfull.* và nhiều trang sao chép giao diện đó.
@@ -97,15 +136,22 @@ export const truyenfullAdapter = {
     const description = htmlToText(doc.querySelector('.desc-text, [itemprop="description"]'));
     const chapters = this.parseChapterList(doc, url);
 
-    // Tìm số trang danh sách chương.
+    // Tìm số trang danh sách chương; link phân trang dạng /trang-N/, /page/N hoặc ?page=N.
     let totalPages = parseInt(doc.querySelector('#total-page')?.getAttribute('value'), 10) || 1;
-    doc.querySelectorAll('.pagination a[href], .pagination li a').forEach((a) => {
-      const m = (a.getAttribute('href') || '').match(/trang-(\d+)/);
-      if (m) totalPages = Math.max(totalPages, parseInt(m[1], 10));
+    let template = null;
+    doc.querySelectorAll('.pagination a[href]').forEach((a) => {
+      const href = absUrl(a.getAttribute('href'), url);
+      const m = href && href.match(/(trang-|\/page\/|[?&]page=)(\d+)/);
+      if (!m) return;
+      totalPages = Math.max(totalPages, parseInt(m[2], 10));
+      if (!template) template = (n) => href.replace(m[0], `${m[1]}${n}`);
     });
-    const base = url.replace(/[?#].*$/, '').replace(/trang-\d+\/?$/, '').replace(/\/?$/, '/');
+    if (!template) {
+      const base = url.replace(/[?#].*$/, '').replace(/trang-\d+\/?$/, '').replace(/\/?$/, '/');
+      template = (n) => `${base}trang-${n}/#list-chapter`;
+    }
     const pageUrls = [];
-    for (let p = 2; p <= totalPages; p++) pageUrls.push(`${base}trang-${p}/#list-chapter`);
+    for (let p = 2; p <= Math.min(totalPages, 500); p++) pageUrls.push(template(p));
 
     return { title, author, cover, description, chapters, pageUrls };
   },
@@ -127,7 +173,9 @@ export const truyenfullAdapter = {
   searchUrl: (origin, query) => `${origin}/tim-kiem/?tukhoa=${encodeURIComponent(query)}`,
 
   parseSearch(doc, url) {
-    return Array.from(doc.querySelectorAll('.list-truyen .row')).map((row) => {
+    // Chỉ lấy khối kết quả chính (bỏ khung "Truyện đang hot", "Thể loại" cũng dùng .list-truyen).
+    const rows = doc.querySelectorAll('.list-truyen:not(.list-side):not(.list-cat) .row[itemscope]');
+    return Array.from(rows.length ? rows : doc.querySelectorAll('.list-truyen:not(.list-side):not(.list-cat) .row')).map((row) => {
       const a = row.querySelector('h3 a, .truyen-title a');
       if (!a) return null;
       const coverEl = row.querySelector('[data-image], [data-desk-image], img');
@@ -174,7 +222,9 @@ export const genericAdapter = {
   detect: () => true,
 
   isStoryPage(doc, url) {
-    return this.parseChapterList(doc, url).length >= 3;
+    // Trang có địa chỉ /chuong-N là trang chương (dù có link chương trước/sau).
+    try { if (CHAPTER_URL.test(new URL(url).pathname)) return false; } catch (e) {}
+    return this.findChapterLinks(doc, url).length >= 3;
   },
 
   parseStory(doc, url) {
@@ -186,8 +236,19 @@ export const genericAdapter = {
   },
 
   parseChapterList(doc, url) {
+    return fillSequentialChapters(this.findChapterLinks(doc, url));
+  },
+
+  findChapterLinks(doc, url) {
     const links = Array.from(doc.querySelectorAll('a[href]'))
-      .map((a) => ({ title: clean(a.getAttribute('title') || a.textContent), url: absUrl(a.getAttribute('href'), url) }))
+      .map((a) => {
+        const href = absUrl(a.getAttribute('href'), url);
+        let title = clean(a.getAttribute('title') || a.textContent);
+        const m = href && new URL(href).pathname.match(CHAPTER_URL);
+        // Link không có số chương ("", "Đọc từ đầu", "Chương mới nhất") nhưng đường dẫn là /chuong-N.
+        if (m && chapterNumber(title) === null) title = `Chương ${m[1]}`;
+        return { title, url: href };
+      })
       .filter((c) => c.url && c.title.length < 200 && CHAPTER_LINK.test(c.title) && sameSite(c.url, url) && c.url !== url);
     return normalizeOrder(dedupeChapters(links));
   },
