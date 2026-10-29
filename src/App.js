@@ -2,7 +2,29 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
 import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
 
+// Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
+let ownBackendAvailable = true;
+
+// Gọi API của chính app trước; nếu app không có backend (host tĩnh, npm start) hoặc lỗi thì dùng server dự phòng.
+const callBackend = async (ownPath, fallbackPath, body) => {
+  const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  let ownError = null;
+  if (ownBackendAvailable) {
+    try {
+      const res = await fetch(ownPath, init);
+      if (res.headers.get('x-truyen-tts')) {
+        if (res.ok) return res;
+        ownError = res;
+      } else {
+        ownBackendAvailable = false;
+      }
+    } catch (e) {}
+  }
+  const fallback = await fetch(`${EDGE_TTS_API}${fallbackPath}`, init).catch(e => { if (ownError) return ownError; throw e; });
+  // Cả hai cùng lỗi thì báo lỗi của server chính.
+  return fallback.ok || !ownError ? fallback : ownError;
+};
 const MAX_CHUNK_SIZE = 800;
 const PREFETCH_CHUNKS = 3; // Tăng lên 3 để chạy nền mượt hơn
 const TRANSLATE_BATCH_SIZE = 1500;
@@ -249,11 +271,7 @@ export default function StoryListenerApp() {
     }
     try {
       const endpoint = engine === 'groq' ? '/translate' : '/translate-google';
-      const response = await fetch(`${EDGE_TTS_API}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-      });
+      const response = await callBackend('/api/translate', endpoint, { text, engine });
       if (!response.ok) throw new Error('Translation failed');
       const data = await response.json();
       const translated = data.translated || text;
@@ -689,11 +707,7 @@ export default function StoryListenerApp() {
     const rp = Math.round((speechRate - 1) * 100);
     const rateStr = rp >= 0 ? `+${rp}%` : `${rp}%`;
     
-    const response = await fetch(`${EDGE_TTS_API}/tts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text.substring(0, 5000), voice: voiceGender, rate: rateStr })
-    });
+    const response = await callBackend('/api/tts', '/tts', { text: text.substring(0, 5000), voice: voiceGender, rate: rateStr });
     if (!response.ok) {
       const detail = await response.json().then(d => d.error).catch(() => '');
       throw new Error(`HTTP ${response.status}${detail ? ` - ${detail.slice(0, 120)}` : ''}`);

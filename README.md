@@ -19,6 +19,12 @@ Trình duyệt không cho đọc HTML trang khác trực tiếp, nên app gọi 
 2. Proxy riêng do bạn nhập trong phần cài đặt (ví dụ một Cloudflare Worker).
 3. Các proxy công cộng (allorigins, corsproxy.io, codetabs) — không ổn định, chỉ là phương án dự phòng.
 
+## Giọng đọc Edge TTS và dịch
+
+- `api/tts.py` và `api/translate.py` là hàm Python chạy trên Vercel (thư viện `edge-tts` ghi trong `requirements.txt`). Từ 10/2026 Microsoft chỉ nhận `edge-tts` >= 7.3.0, bản cũ bị lỗi 403.
+- Dịch bằng Groq cần đặt biến môi trường `GROQ_API_KEY` trong Vercel (Settings → Environment Variables). Không có key thì dùng Google Translate.
+- Khi app không có các hàm này (chạy `npm start` hoặc host tĩnh), app dùng server dự phòng trên Hugging Face.
+
 ## Chạy
 
 ```bash
