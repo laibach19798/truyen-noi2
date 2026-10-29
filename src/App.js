@@ -1,11 +1,49 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages } from 'lucide-react';
+import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
 
+// Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
+let ownBackendAvailable = true;
+
+// Gọi API của chính app trước; nếu app không có backend (host tĩnh, npm start) hoặc lỗi thì dùng server dự phòng.
+const callBackend = async (ownPath, fallbackPath, body) => {
+  const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  let ownError = null;
+  if (ownBackendAvailable) {
+    try {
+      const res = await fetch(ownPath, init);
+      if (res.headers.get('x-truyen-tts')) {
+        if (res.ok) return res;
+        ownError = res;
+      } else {
+        ownBackendAvailable = false;
+      }
+    } catch (e) {}
+  }
+  const fallback = await fetch(`${EDGE_TTS_API}${fallbackPath}`, init).catch(e => { if (ownError) return ownError; throw e; });
+  // Cả hai cùng lỗi thì báo lỗi của server chính.
+  return fallback.ok || !ownError ? fallback : ownError;
+};
 const MAX_CHUNK_SIZE = 800;
 const PREFETCH_CHUNKS = 3; // Tăng lên 3 để chạy nền mượt hơn
 const TRANSLATE_BATCH_SIZE = 1500;
 const MAX_PARALLEL_TRANSLATES = 3;
+const LIBRARY_KEY = 'library_v1';
+const MAX_LIBRARY = 30;
+
+// Văn bản đã là tiếng Việt (nhiều dấu, không có chữ Hán) thì không cần dịch.
+const needsTranslation = (text) => {
+  if (!text) return false;
+  const sample = text.slice(0, 3000);
+  if (/[\u4e00-\u9fff]/.test(sample)) return true;
+  const viChars = (sample.match(/[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/gi) || []).length;
+  return viChars / sample.length < 0.02;
+};
+
+const readLibrary = () => {
+  try { return JSON.parse(localStorage.getItem(LIBRARY_KEY) || '[]'); } catch (e) { return []; }
+};
 
 export default function StoryListenerApp() {
   const [chapters, setChapters] = useState([]);
@@ -35,6 +73,18 @@ export default function StoryListenerApp() {
   const [translatedChapter, setTranslatedChapter] = useState('');
   const [translationProgress, setTranslationProgress] = useState(0);
   const [isTranslating, setIsTranslating] = useState(false);
+
+  // Truyện lấy từ web
+  const [story, setStory] = useState(null);
+  const [isLoadingChapter, setIsLoadingChapter] = useState(false);
+  const [loadProgress, setLoadProgress] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchOrigin, setSearchOrigin] = useState(() => localStorage.getItem('searchOrigin') || DEFAULT_SEARCH_ORIGIN);
+  const [customProxy, setCustomProxyState] = useState(getCustomProxy);
+  const [showSourceSettings, setShowSourceSettings] = useState(false);
+  const [library, setLibrary] = useState(readLibrary);
   
   // REFS
   const audioRef = useRef(null);
@@ -61,6 +111,7 @@ export default function StoryListenerApp() {
   const currentChunkWordOffsetRef = useRef(0);
   const animationFrameRef = useRef(null);
   const translatingChapterRef = useRef(-1);
+  const storyRef = useRef(null);
 
   useEffect(() => { currentChapterIndexRef.current = currentChapterIndex; }, [currentChapterIndex]);
   useEffect(() => { currentChunkIndexRef.current = currentChunkIndex; }, [currentChunkIndex]);
@@ -68,6 +119,7 @@ export default function StoryListenerApp() {
   useEffect(() => { chaptersRef.current = chapters; }, [chapters]);
   useEffect(() => { ttsModeRef.current = ttsMode; }, [ttsMode]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { storyRef.current = story; }, [story]);
 
   const theme = darkMode ? {
     bg: 'bg-gradient-to-br from-slate-900 via-purple-950 to-slate-900',
@@ -219,11 +271,7 @@ export default function StoryListenerApp() {
     }
     try {
       const endpoint = engine === 'groq' ? '/translate' : '/translate-google';
-      const response = await fetch(`${EDGE_TTS_API}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-      });
+      const response = await callBackend('/api/translate', endpoint, { text, engine });
       if (!response.ok) throw new Error('Translation failed');
       const data = await response.json();
       const translated = data.translated || text;
@@ -288,15 +336,20 @@ export default function StoryListenerApp() {
     return null;
   };
 
+  const currentChapterContent = chapters[currentChapterIndex]?.content;
+  const currentChapterUrl = chapters[currentChapterIndex]?.url;
+
   useEffect(() => {
-    if (!autoTranslate || chapters.length === 0) {
+    if (!autoTranslate || chapters.length === 0 || !needsTranslation(currentChapterContent)) {
+      translatingChapterRef.current = -1;
+      setIsTranslating(false);
       setTranslatedChapter('');
       return;
     }
     const chapter = chapters[currentChapterIndex];
     if (!chapter) return;
     
-    const fullCacheKey = `chapter_${currentChapterIndex}_${translateEngine}_${chapter.title}`;
+    const fullCacheKey = `chapter_${chapter.url || currentChapterIndex}_${translateEngine}_${chapter.title}`;
     const cached = translateCacheRef.current.get(fullCacheKey);
     if (cached) { setTranslatedChapter(cached); return; }
     
@@ -319,7 +372,8 @@ export default function StoryListenerApp() {
         } catch (e) {}
       }
     });
-  }, [currentChapterIndex, autoTranslate, translateEngine, chapters]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentChapterIndex, autoTranslate, translateEngine, currentChapterContent]);
 
   // ============ CHUNKS ============
   const splitIntoChunks = useCallback((text, maxSize = MAX_CHUNK_SIZE) => {
@@ -460,6 +514,7 @@ export default function StoryListenerApp() {
         newChapters = parseTextFile(text);
       }
       if (newChapters.length === 0) throw new Error('Không có nội dung');
+      setStory(null);
       setChapters(newChapters);
       setCurrentChapterIndex(0);
       setCurrentChunkIndex(0);
@@ -501,6 +556,149 @@ export default function StoryListenerApp() {
     return arr;
   };
 
+  // ============ TRUYỆN TỪ WEB ============
+  // Tải nội dung chương idx nếu chưa có. Ở chế độ "lần theo" (mở từ link chương)
+  // thì thêm chương kế tiếp vào cuối danh sách khi biết link "Chương sau".
+  const ensureChapterLoaded = useCallback(async (idx) => {
+    const ch = chaptersRef.current[idx];
+    if (!ch) return false;
+    if (ch.content) return true;
+    if (!ch.url) return false;
+    const data = await loadChapter(ch.url);
+    const list = chaptersRef.current;
+    if (list[idx]?.url !== ch.url) return false; // đã đổi truyện trong lúc tải
+    const updated = [...list];
+    const follow = storyRef.current?.mode === 'follow';
+    updated[idx] = {
+      ...updated[idx],
+      title: (follow && data.title) || updated[idx].title,
+      content: data.content,
+      nextUrl: data.nextUrl,
+    };
+    if (follow && idx === updated.length - 1 && data.nextUrl && !updated.some(c => c.url === data.nextUrl)) {
+      updated.push({ title: `Chương tiếp theo (${idx + 2})`, url: data.nextUrl });
+    }
+    chaptersRef.current = updated;
+    setChapters(updated);
+    return true;
+  }, []);
+
+  // Tải chương đang xem, rồi tải trước chương sau để chuyển chương liền mạch.
+  useEffect(() => {
+    if (!currentChapterUrl) { setIsLoadingChapter(false); return; }
+    let cancelled = false;
+    if (currentChapterContent) {
+      setIsLoadingChapter(false);
+      ensureChapterLoaded(currentChapterIndex + 1).catch(() => {});
+    } else {
+      setIsLoadingChapter(true);
+      ensureChapterLoaded(currentChapterIndex)
+        .catch(e => { if (!cancelled) setErrorMsg('Không tải được chương: ' + e.message); })
+        .finally(() => { if (!cancelled) setIsLoadingChapter(false); });
+    }
+    return () => { cancelled = true; };
+  }, [currentChapterIndex, currentChapterUrl, currentChapterContent, ensureChapterLoaded]);
+
+  const resetPlayback = () => {
+    audioCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+    audioCacheRef.current.clear();
+    chunksCacheRef.current.clear();
+    setTranslatedChapter('');
+    setCurrentChunkIndex(0);
+    setCurrentWordIndex(-1);
+  };
+
+  const openStory = (storyInfo, chapterList, startIndex = 0) => {
+    stopAllAudioRef.current?.();
+    resetPlayback();
+    const list = [...chapterList];
+    const last = list[list.length - 1];
+    if (storyInfo.mode === 'follow' && last?.nextUrl && !list.some(c => c.url === last.nextUrl)) {
+      list.push({ title: `Chương tiếp theo (${list.length + 1})`, url: last.nextUrl });
+    }
+    const idx = Math.min(Math.max(startIndex, 0), list.length - 1);
+    storyRef.current = storyInfo;
+    chaptersRef.current = list;
+    setStory(storyInfo);
+    setChapters(list);
+    setCurrentChapterIndex(idx);
+    setSearchResults(null);
+    setErrorMsg('');
+  };
+
+  const openUrl = async (url) => {
+    if (!url?.trim()) return;
+    setIsLoadingWeb(true);
+    setErrorMsg('');
+    setLoadProgress('Đang tải trang...');
+    try {
+      const { story: info, chapters: list } = await loadFromUrl(url, { onProgress: setLoadProgress });
+      const saved = library.find(e => e.sourceUrl === info.sourceUrl);
+      openStory(info, list, saved?.lastIndex || 0);
+      setWebUrl('');
+    } catch (error) {
+      setErrorMsg(error.message || 'Không tải được URL');
+    }
+    setLoadProgress('');
+    setIsLoadingWeb(false);
+  };
+
+  const openLibraryEntry = (entry) => {
+    const { chapters: list, lastIndex, lastTitle, updatedAt, ...info } = entry;
+    openStory(info, list, lastIndex);
+    // Cập nhật mục lục ở nền để thấy chương mới.
+    if (info.mode === 'index') {
+      loadFromUrl(info.sourceUrl).then(({ chapters: fresh }) => {
+        if (storyRef.current?.sourceUrl !== info.sourceUrl || fresh.length <= chaptersRef.current.length) return;
+        const updated = [...chaptersRef.current, ...fresh.slice(chaptersRef.current.length)];
+        chaptersRef.current = updated;
+        setChapters(updated);
+      }).catch(() => {});
+    }
+  };
+
+  const removeLibraryEntry = (sourceUrl) => {
+    setLibrary(prev => {
+      const next = prev.filter(e => e.sourceUrl !== sourceUrl);
+      try { localStorage.setItem(LIBRARY_KEY, JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  };
+
+  const runSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    setErrorMsg('');
+    try {
+      const results = await searchStories(searchQuery.trim(), searchOrigin);
+      setSearchResults(results);
+    } catch (error) {
+      setErrorMsg('Tìm kiếm thất bại: ' + error.message);
+    }
+    setIsSearching(false);
+  };
+
+  // Lưu tiến độ nghe vào tủ truyện.
+  const chapterCount = chapters.length;
+  useEffect(() => {
+    if (!story) return;
+    const list = chaptersRef.current;
+    const entry = {
+      ...story,
+      chapters: list.map(({ title, url }) => ({ title, url })),
+      lastIndex: currentChapterIndex,
+      lastTitle: list[currentChapterIndex]?.title || '',
+      updatedAt: Date.now(),
+    };
+    setLibrary(prev => {
+      const next = [entry, ...prev.filter(e => e.sourceUrl !== story.sourceUrl)].slice(0, MAX_LIBRARY);
+      try { localStorage.setItem(LIBRARY_KEY, JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  }, [story, currentChapterIndex, chapterCount]);
+
+  useEffect(() => { try { localStorage.setItem('searchOrigin', searchOrigin); } catch (e) {} }, [searchOrigin]);
+
   // ============ TTS ============
   const fetchChunkAudio = useCallback(async (chapterIdx, chunkIdx, text) => {
     const cacheKey = `${chapterIdx}_${chunkIdx}_${voiceGender}_${speechRate}_${autoTranslate ? 'tr' : 'org'}`;
@@ -509,12 +707,11 @@ export default function StoryListenerApp() {
     const rp = Math.round((speechRate - 1) * 100);
     const rateStr = rp >= 0 ? `+${rp}%` : `${rp}%`;
     
-    const response = await fetch(`${EDGE_TTS_API}/tts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text.substring(0, 5000), voice: voiceGender, rate: rateStr })
-    });
-    if (!response.ok) throw new Error('TTS error');
+    const response = await callBackend('/api/tts', '/tts', { text: text.substring(0, 5000), voice: voiceGender, rate: rateStr });
+    if (!response.ok) {
+      const detail = await response.json().then(d => d.error).catch(() => '');
+      throw new Error(`HTTP ${response.status}${detail ? ` - ${detail.slice(0, 120)}` : ''}`);
+    }
     
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -606,7 +803,14 @@ export default function StoryListenerApp() {
       if (autoNextRef.current && chapterIdx + 1 < chaptersRef.current.length) {
         setCurrentChapterIndex(chapterIdx + 1);
         setCurrentChunkIndex(0);
-        setTimeout(() => playChunk(chapterIdx + 1, 0), 300);
+        setIsLoadingAudio(true);
+        ensureChapterLoaded(chapterIdx + 1)
+          .then(() => setTimeout(() => playChunk(chapterIdx + 1, 0), 300))
+          .catch(e => {
+            setIsLoadingAudio(false);
+            setIsPlaying(false);
+            setErrorMsg('Không tải được chương tiếp: ' + e.message);
+          });
       } else {
         setIsPlaying(false);
         setCurrentWordIndex(-1);
@@ -675,7 +879,8 @@ export default function StoryListenerApp() {
       } catch (error) {
         setIsLoadingAudio(false);
         setIsPlaying(false);
-        setErrorMsg('Lỗi Edge TTS, chuyển sang giọng nhanh');
+        console.error('Edge TTS error:', error);
+        setErrorMsg(`Lỗi Edge TTS (${error.message}), tạm chuyển sang giọng nhanh`);
         setTimeout(() => {
           setTtsMode('web');
           playChunkWebSpeech(chapterIdx, chunkIdx);
@@ -684,7 +889,7 @@ export default function StoryListenerApp() {
     } else {
       playChunkWebSpeech(chapterIdx, chunkIdx);
     }
-  }, [getChunksForChapter, splitIntoWords, fetchChunkAudio, startWordHighlight, prefetchNextChunks, requestWakeLock, releaseWakeLock, setupMediaSession, updateMediaPosition]);
+  }, [getChunksForChapter, splitIntoWords, fetchChunkAudio, startWordHighlight, prefetchNextChunks, requestWakeLock, releaseWakeLock, setupMediaSession, updateMediaPosition, ensureChapterLoaded]);
 
   const playChunkWebSpeech = useCallback((chapterIdx, chunkIdx) => {
     const chunks = getChunksForChapter(chapterIdx);
@@ -692,7 +897,12 @@ export default function StoryListenerApp() {
       if (autoNextRef.current && chapterIdx + 1 < chaptersRef.current.length) {
         setCurrentChapterIndex(chapterIdx + 1);
         setCurrentChunkIndex(0);
-        setTimeout(() => playChunkWebSpeech(chapterIdx + 1, 0), 300);
+        ensureChapterLoaded(chapterIdx + 1)
+          .then(() => setTimeout(() => playChunkWebSpeech(chapterIdx + 1, 0), 300))
+          .catch(e => {
+            setIsPlaying(false);
+            setErrorMsg('Không tải được chương tiếp: ' + e.message);
+          });
       } else {
         setIsPlaying(false);
         releaseWakeLock();
@@ -743,10 +953,14 @@ export default function StoryListenerApp() {
     setIsPlaying(true);
     requestWakeLock();
     setupMediaSession(chaptersRef.current[chapterIdx]?.title, chapterIdx + 1, chaptersRef.current.length);
-  }, [getChunksForChapter, splitIntoWords, speechRate, voiceGender, scrollToWord, requestWakeLock, releaseWakeLock, setupMediaSession]);
+  }, [getChunksForChapter, splitIntoWords, speechRate, voiceGender, scrollToWord, requestWakeLock, releaseWakeLock, setupMediaSession, ensureChapterLoaded]);
 
   const togglePlay = useCallback(() => {
     if (!chapters.length) return;
+    if (isLoadingChapter || !chapters[currentChapterIndex]?.content) {
+      setErrorMsg('Đang tải chương... vui lòng chờ');
+      return;
+    }
     if (isTranslating) {
       setErrorMsg('Đang dịch... vui lòng chờ');
       return;
@@ -768,7 +982,7 @@ export default function StoryListenerApp() {
       }
       playChunk(currentChapterIndex, currentChunkIndex);
     }
-  }, [chapters, isTranslating, isPlaying, isLoadingAudio, ttsMode, currentChapterIndex, currentChunkIndex, playChunk, releaseWakeLock, createSilentAudio]);
+  }, [chapters, isLoadingChapter, isTranslating, isPlaying, isLoadingAudio, ttsMode, currentChapterIndex, currentChunkIndex, playChunk, releaseWakeLock, createSilentAudio]);
 
   const stopAllAudio = useCallback(() => {
     if (audioRef.current) {
@@ -801,6 +1015,9 @@ export default function StoryListenerApp() {
     }
   }, [stopAllAudio]);
 
+  const stopAllAudioRef = useRef(null);
+  useEffect(() => { stopAllAudioRef.current = stopAllAudio; }, [stopAllAudio]);
+
   // Sync refs cho Media Session
   useEffect(() => { togglePlayRef.current = togglePlay; }, [togglePlay]);
   useEffect(() => { prevChapterRef.current = prevChapter; }, [prevChapter]);
@@ -812,27 +1029,6 @@ export default function StoryListenerApp() {
     setCurrentChunkIndex(0);
     setShowChapterList(false);
     if (textContainerRef.current) textContainerRef.current.scrollTop = 0;
-  };
-
-  const loadFromWeb = async () => {
-    if (!webUrl.trim()) return;
-    setIsLoadingWeb(true);
-    audioCacheRef.current.clear();
-    chunksCacheRef.current.clear();
-    try {
-      const response = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(webUrl)}`);
-      const html = await response.text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      doc.querySelectorAll('script, style, nav, footer').forEach(el => el.remove());
-      const newChapters = parseTextFile(doc.body.innerText);
-      setChapters(newChapters);
-      setCurrentChapterIndex(0);
-      setCurrentChunkIndex(0);
-      setWebUrl('');
-    } catch (error) {
-      setErrorMsg('Không tải được URL');
-    }
-    setIsLoadingWeb(false);
   };
 
   useEffect(() => {
@@ -941,28 +1137,121 @@ export default function StoryListenerApp() {
         )}
 
         {chapters.length === 0 && (
-          <div className={`${theme.card} border rounded-2xl p-6 mb-6`}>
-            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-              <Upload className="w-5 h-5" /> Tải truyện
-            </h2>
-            <button onClick={() => fileInputRef.current?.click()} disabled={isLoadingFile}
-              className={`w-full ${theme.buttonPrimary} font-semibold py-4 rounded-xl shadow-lg mb-3 disabled:opacity-50`}>
-              {isLoadingFile ? (
-                <span className="flex items-center justify-center gap-2"><Loader className="w-5 h-5 animate-spin" /> Đang xử lý...</span>
-              ) : '📁 Chọn file (TXT, EPUB, HTML)'}
-            </button>
-            <input ref={fileInputRef} type="file" accept=".txt,.epub,.html,.htm" onChange={handleFileUpload} className="hidden" />
-            <div className="flex gap-2 mt-4">
-              <input type="url" value={webUrl} onChange={(e) => setWebUrl(e.target.value)}
-                placeholder="Hoặc dán link..."
-                className={`flex-1 px-4 py-3 rounded-xl ${theme.input} border focus:outline-none focus:ring-2 focus:ring-amber-500`}
-                onKeyPress={(e) => e.key === 'Enter' && loadFromWeb()} />
-              <button onClick={loadFromWeb} disabled={isLoadingWeb}
-                className={`${theme.buttonPrimary} font-semibold px-5 py-3 rounded-xl disabled:opacity-50`}>
-                {isLoadingWeb ? <Loader className="w-5 h-5 animate-spin" /> : '🌐'}
-              </button>
+          <>
+            <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+              <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                <Search className="w-5 h-5" /> Tìm truyện
+              </h2>
+              <div className="flex gap-2">
+                <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Tên truyện, tác giả..."
+                  className={`flex-1 min-w-0 px-4 py-3 rounded-xl ${theme.input} border focus:outline-none focus:ring-2 focus:ring-amber-500`}
+                  onKeyDown={(e) => e.key === 'Enter' && runSearch()} />
+                <button onClick={runSearch} disabled={isSearching}
+                  className={`${theme.buttonPrimary} font-semibold px-5 py-3 rounded-xl disabled:opacity-50`}>
+                  {isSearching ? <Loader className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
+                </button>
+              </div>
+              {searchResults && (
+                <div className="mt-3 max-h-96 overflow-y-auto space-y-2">
+                  {searchResults.length === 0 && <p className={`text-sm ${theme.textMuted}`}>Không tìm thấy truyện nào.</p>}
+                  {searchResults.map((r) => (
+                    <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
+                      className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {r.cover
+                        ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" className="w-10 h-14 object-cover rounded flex-shrink-0" />
+                        : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{r.title}</div>
+                        <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
+
+            <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+              <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
+                <Globe className="w-5 h-5" /> Mở truyện từ trang khác
+              </h2>
+              <p className={`text-xs ${theme.textMuted} mb-3`}>
+                Dán link trang giới thiệu truyện (có mục lục) hoặc link một chương — app sẽ tự lấy nội dung và đọc nối tiếp các chương.
+              </p>
+              <div className="flex gap-2">
+                <input type="url" value={webUrl} onChange={(e) => setWebUrl(e.target.value)}
+                  placeholder="https://..."
+                  className={`flex-1 min-w-0 px-4 py-3 rounded-xl ${theme.input} border focus:outline-none focus:ring-2 focus:ring-amber-500`}
+                  onKeyDown={(e) => e.key === 'Enter' && openUrl(webUrl)} />
+                <button onClick={() => openUrl(webUrl)} disabled={isLoadingWeb}
+                  className={`${theme.buttonPrimary} font-semibold px-5 py-3 rounded-xl disabled:opacity-50`}>
+                  {isLoadingWeb ? <Loader className="w-5 h-5 animate-spin" /> : 'Mở'}
+                </button>
+              </div>
+              {loadProgress && <p className={`text-xs mt-2 ${theme.accent}`}>{loadProgress}</p>}
+              <button onClick={() => setShowSourceSettings(!showSourceSettings)} className={`text-xs mt-3 underline ${theme.textMuted}`}>
+                {showSourceSettings ? 'Ẩn' : 'Cài đặt'} nguồn & proxy
+              </button>
+              {showSourceSettings && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className={`text-xs ${theme.textMuted} block mb-1`}>Trang dùng để tìm kiếm (giao diện TruyệnFull)</label>
+                    <input type="url" value={searchOrigin} onChange={(e) => setSearchOrigin(e.target.value)}
+                      className={`w-full px-3 py-2 rounded-lg text-sm ${theme.input} border`} />
+                  </div>
+                  <div>
+                    <label className={`text-xs ${theme.textMuted} block mb-1`}>
+                      Proxy CORS riêng (tuỳ chọn, dùng <code>{'{url}'}</code> làm chỗ thay link)
+                    </label>
+                    <input type="url" value={customProxy} placeholder="https://my-proxy.example.com/?url={url}"
+                      onChange={(e) => { setCustomProxyState(e.target.value); setCustomProxy(e.target.value); }}
+                      className={`w-full px-3 py-2 rounded-lg text-sm ${theme.input} border`} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+              <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                <Upload className="w-5 h-5" /> Tải file truyện
+              </h2>
+              <button onClick={() => fileInputRef.current?.click()} disabled={isLoadingFile}
+                className={`w-full ${theme.button} font-semibold py-3 rounded-xl disabled:opacity-50`}>
+                {isLoadingFile ? (
+                  <span className="flex items-center justify-center gap-2"><Loader className="w-5 h-5 animate-spin" /> Đang xử lý...</span>
+                ) : '📁 Chọn file (TXT, EPUB, HTML)'}
+              </button>
+              <input ref={fileInputRef} type="file" accept=".txt,.epub,.html,.htm" onChange={handleFileUpload} className="hidden" />
+            </div>
+
+            {library.length > 0 && (
+              <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+                <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <BookOpen className="w-5 h-5" /> Tủ truyện ({library.length})
+                </h2>
+                <div className="space-y-2">
+                  {library.map((e) => (
+                    <div key={e.sourceUrl} className={`flex items-center gap-3 p-2 rounded-xl ${theme.button}`}>
+                      <button onClick={() => openLibraryEntry(e)} className="flex-1 min-w-0 flex items-center gap-3 text-left">
+                        {e.cover
+                          ? <img src={e.cover} alt="" loading="lazy" referrerPolicy="no-referrer" className="w-10 h-14 object-cover rounded flex-shrink-0" />
+                          : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
+                        <div className="min-w-0">
+                          <div className="font-semibold truncate">{e.title}</div>
+                          <div className={`text-xs ${theme.textMuted} truncate`}>
+                            Đang nghe: {e.lastTitle || `Chương ${e.lastIndex + 1}`} ({e.lastIndex + 1}/{e.chapters.length})
+                          </div>
+                        </div>
+                      </button>
+                      <button onClick={() => removeLibraryEntry(e.sourceUrl)} className="p-2 opacity-60 hover:opacity-100" title="Xoá khỏi tủ">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {chapters.length > 0 && (
@@ -1014,6 +1303,7 @@ export default function StoryListenerApp() {
                 <button onClick={() => {
                     stopAllAudio();
                     setChapters([]);
+                    setStory(null);
                     setShowSettings(false);
                     audioCacheRef.current.forEach(url => URL.revokeObjectURL(url));
                     audioCacheRef.current.clear();
@@ -1051,6 +1341,20 @@ export default function StoryListenerApp() {
               </div>
             )}
 
+            {story && (
+              <div className={`${theme.card} border rounded-2xl p-3 mb-4 flex items-center gap-3`}>
+                {story.cover
+                  ? <img src={story.cover} alt="" referrerPolicy="no-referrer" className="w-12 h-16 object-cover rounded flex-shrink-0" />
+                  : <BookOpen className={`w-10 h-10 p-1 flex-shrink-0 ${theme.accent}`} />}
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">{story.title}</div>
+                  <div className={`text-xs ${theme.textMuted} truncate`}>
+                    {[story.author, story.site, (() => { try { return new URL(story.sourceUrl).hostname; } catch (e) { return ''; } })()].filter(Boolean).join(' • ')}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className={`${theme.card} border rounded-2xl p-5 md:p-8 mb-4`}>
               <div className={`mb-5 pb-4 border-b ${theme.border}`}>
                 <h2 className={`text-2xl md:text-3xl font-bold ${theme.accent} mb-1`}>{currentChapter.title}</h2>
@@ -1059,7 +1363,7 @@ export default function StoryListenerApp() {
                   {chunksOfCurrentChapter.length > 1 && (
                     <span className="ml-2">• Phần {currentChunkIndex + 1}/{chunksOfCurrentChapter.length}</span>
                   )}
-                  {autoTranslate && !isTranslating && (
+                  {autoTranslate && !isTranslating && translatedChapter && (
                     <span className={`ml-2 px-2 py-0.5 rounded text-xs border ${theme.translateBadge}`}>🤖 Đã dịch</span>
                   )}
                 </p>
@@ -1080,6 +1384,11 @@ export default function StoryListenerApp() {
               <div ref={textContainerRef}
                 className={`${theme.textBg} rounded-xl p-5 mb-6 overflow-y-auto`}
                 style={{ fontSize: `${fontSize}px`, lineHeight: 1.9, height: '45vh', minHeight: '320px', maxHeight: '500px' }}>
+                {isLoadingChapter && (
+                  <div className={`flex items-center justify-center gap-2 h-full ${theme.textMuted}`}>
+                    <Loader className="w-5 h-5 animate-spin" /> Đang tải chương...
+                  </div>
+                )}
                 <div className="whitespace-pre-wrap">
                   {displayWords.map((word, idx) => (
                     <span key={idx} ref={el => wordRefs.current[idx] = el}
@@ -1097,7 +1406,7 @@ export default function StoryListenerApp() {
                   className={`${theme.button} disabled:opacity-30 p-3 md:p-4 rounded-full hover:scale-110`}>
                   <ChevronLeft className="w-6 h-6" />
                 </button>
-                <button onClick={togglePlay} disabled={isLoadingAudio || isTranslating}
+                <button onClick={togglePlay} disabled={isLoadingAudio || isTranslating || isLoadingChapter}
                   className={`${theme.buttonPrimary} p-5 md:p-6 rounded-full hover:scale-110 shadow-xl disabled:opacity-50`}>
                   {isLoadingAudio ? <Loader className="w-8 h-8 animate-spin" /> : isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
                 </button>
