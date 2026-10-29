@@ -84,12 +84,3 @@ export async function searchStories(query, origin = DEFAULT_SEARCH_ORIGIN) {
   const { html, url } = await fetchHtml(truyenfullAdapter.searchUrl(base, query));
   return truyenfullAdapter.parseSearch(parseHtml(html), url);
 }
-
-// Tìm trên toàn web qua /api/search (Brave Search hoặc DuckDuckGo). type: 'story' | 'author'.
-export async function searchWeb(query, type = 'story') {
-  const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&type=${type}`);
-  if (!res.headers.get('x-truyen-proxy')) throw new Error('cần chạy app trên Vercel hoặc npm run serve');
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
