@@ -6,8 +6,8 @@ export { getCustomProxy, setCustomProxy } from './fetcher';
 const chapterCache = new Map();
 const MAX_CACHED_CHAPTERS = 60;
 
-// Trang dùng để tìm kiếm (giao diện TruyệnFull). Tên miền hay đổi nên cho phép sửa.
-export const DEFAULT_SEARCH_ORIGIN = 'https://truyenfull.vision';
+// Các trang dùng để tìm kiếm (giao diện TruyệnFull: /tim-kiem/?tukhoa=). Tên miền hay đổi nên cho phép sửa.
+export const DEFAULT_SEARCH_ORIGINS = ['https://truyenfull.vision', 'https://truyenhoan.com'];
 
 // Mở một URL bất kỳ: trang giới thiệu truyện (có mục lục) hoặc một trang chương.
 // Trả về { story, chapters } — nội dung chương được tải sau (lazy).
@@ -79,7 +79,7 @@ export function loadChapter(url) {
   return p;
 }
 
-export async function searchStories(query, origin = DEFAULT_SEARCH_ORIGIN) {
+export async function searchStories(query, origin) {
   const base = (/^https?:\/\//i.test(origin) ? origin : `https://${origin}`).replace(/\/+$/, '');
   const { html, url } = await fetchHtml(truyenfullAdapter.searchUrl(base, query));
   return truyenfullAdapter.parseSearch(parseHtml(html), url);

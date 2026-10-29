@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, searchWeb, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
+import { loadFromUrl, loadChapter, searchStories, searchWeb, DEFAULT_SEARCH_ORIGINS, getCustomProxy, setCustomProxy } from './sources';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -89,7 +89,13 @@ export default function StoryListenerApp() {
   const [searchResults, setSearchResults] = useState(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchType, setSearchType] = useState('story');
-  const [searchOrigin, setSearchOrigin] = useState(() => localStorage.getItem('searchOrigin') || DEFAULT_SEARCH_ORIGIN);
+  const [searchOrigins, setSearchOrigins] = useState(() => {
+    const saved = localStorage.getItem('searchOrigins');
+    if (saved !== null) return saved;
+    // Bản cũ chỉ lưu một trang (searchOrigin) — giữ lại trang đó và thêm các trang mặc định.
+    const old = localStorage.getItem('searchOrigin');
+    return [...new Set([old, ...DEFAULT_SEARCH_ORIGINS].filter(Boolean))].join('\n');
+  });
   const [customProxy, setCustomProxyState] = useState(getCustomProxy);
   const [showSourceSettings, setShowSourceSettings] = useState(false);
   const [library, setLibrary] = useState(readLibrary);
@@ -680,10 +686,15 @@ export default function StoryListenerApp() {
     setErrorMsg('');
     const q = searchQuery.trim();
     // Tìm song song: trên trang truyện (giao diện TruyệnFull) và trên toàn web.
-    const [site, web] = await Promise.allSettled([searchStories(q, searchOrigin), searchWeb(q, searchType)]);
+    const origins = searchOrigins.split(/[\s,]+/).filter(Boolean);
+    // Tìm song song: trên từng trang truyện (giao diện TruyệnFull) và trên toàn web.
+    const [web, ...sites] = await Promise.allSettled([searchWeb(q, searchType), ...origins.map(o => searchStories(q, o))]);
     setSearchResults({
-      site: site.status === 'fulfilled' ? site.value : [],
-      siteError: site.status === 'rejected' ? site.reason.message : '',
+      sites: sites.map((r, i) => ({
+        host: origins[i].replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
+        results: r.status === 'fulfilled' ? r.value : [],
+        error: r.status === 'rejected' ? r.reason.message : '',
+      })),
       web: web.status === 'fulfilled' ? web.value.results : [],
       webProvider: web.status === 'fulfilled' ? web.value.provider : '',
       webError: web.status === 'rejected' ? web.reason.message : '',
@@ -710,7 +721,7 @@ export default function StoryListenerApp() {
     });
   }, [story, currentChapterIndex, chapterCount]);
 
-  useEffect(() => { try { localStorage.setItem('searchOrigin', searchOrigin); } catch (e) {} }, [searchOrigin]);
+  useEffect(() => { try { localStorage.setItem('searchOrigins', searchOrigins); } catch (e) {} }, [searchOrigins]);
 
   // ============ TTS ============
   const fetchChunkAudio = useCallback(async (chapterIdx, chunkIdx, text) => {
@@ -1175,25 +1186,27 @@ export default function StoryListenerApp() {
               </div>
               {searchResults && (
                 <div className="mt-3 max-h-[28rem] overflow-y-auto space-y-4">
-                  <div>
-                    <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>📚 Trên TruyệnFull ({searchResults.site.length})</p>
-                    {searchResults.siteError && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {searchResults.siteError}</p>}
-                    {!searchResults.siteError && searchResults.site.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
-                    <div className="space-y-2">
-                      {searchResults.site.map((r) => (
-                        <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
-                          className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
-                          {r.cover
-                            ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
-                            : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate">{r.title}</div>
-                            <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
-                          </div>
-                        </button>
-                      ))}
+                  {searchResults.sites.map((site) => (
+                    <div key={site.host}>
+                      <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>📚 {site.host} ({site.results.length})</p>
+                      {site.error && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {site.error}</p>}
+                      {!site.error && site.results.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
+                      <div className="space-y-2">
+                        {site.results.map((r) => (
+                          <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
+                            className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
+                            {r.cover
+                              ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
+                              : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
+                            <div className="min-w-0">
+                              <div className="font-semibold truncate">{r.title}</div>
+                              <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  ))}
                   <div>
                     <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>
                       🌐 Trên web ({searchResults.web.length}){searchResults.webProvider && ` • ${searchResults.webProvider === 'brave' ? 'Brave Search' : 'DuckDuckGo'}`}
@@ -1240,8 +1253,10 @@ export default function StoryListenerApp() {
               {showSourceSettings && (
                 <div className="mt-3 space-y-3">
                   <div>
-                    <label className={`text-xs ${theme.textMuted} block mb-1`}>Trang dùng để tìm kiếm (giao diện TruyệnFull)</label>
-                    <input type="url" value={searchOrigin} onChange={(e) => setSearchOrigin(e.target.value)}
+                    <label className={`text-xs ${theme.textMuted} block mb-1`}>
+                      Các trang dùng để tìm kiếm, mỗi dòng một trang (trang có ô tìm kiếm kiểu TruyệnFull: <code>/tim-kiem/?tukhoa=</code>)
+                    </label>
+                    <textarea rows={3} value={searchOrigins} onChange={(e) => setSearchOrigins(e.target.value)}
                       className={`w-full px-3 py-2 rounded-lg text-sm ${theme.input} border`} />
                   </div>
                   <div>

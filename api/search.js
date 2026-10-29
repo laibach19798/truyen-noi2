@@ -116,7 +116,8 @@ async function handler(req, res) {
     }
   }
   res.statusCode = 502;
-  res.end(JSON.stringify({ error: `Không tìm được (${errors.join('; ')})` }));
+  const hint = process.env.BRAVE_API_KEY ? '' : ' — thêm BRAVE_API_KEY trong Vercel để tìm trên web ổn định';
+  res.end(JSON.stringify({ error: `${errors.join('; ')}${hint}` }));
 }
 
 module.exports = handler;
