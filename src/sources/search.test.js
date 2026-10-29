@@ -1,4 +1,4 @@
-const { parseDuckDuckGo, rankResults, buildQuery } = require('../../api/search');
+const { parseDuckDuckGo, rankResults, buildQuery } = require('./webSearchParse');
 
 const ddgHtml = `
 <div class="result"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D1&amp;rut=x">Tiên Nghịch tập 1</a>
