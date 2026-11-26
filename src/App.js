@@ -1133,6 +1133,11 @@ export default function StoryListenerApp() {
     };
   }, [releaseWakeLock]);
 
+  // Truyện của tôi / truyện sáng tác đã gỡ khỏi web thì không hiện trong tủ truyện nữa.
+  const visibleLibrary = library.filter(e =>
+    (e.mode !== 'gdoc' || MY_STORIES.some(d => d.id === e.docId)) &&
+    (e.mode !== 'local' || localStories.some(s => s.slug === e.slug)));
+
   const currentChapter = chapters[currentChapterIndex] || {};
   const { words: displayWords = [] } = allWordsOfChapter;
   const chunksOfCurrentChapter = getChunksForChapter(currentChapterIndex);
@@ -1340,13 +1345,13 @@ export default function StoryListenerApp() {
               <input ref={fileInputRef} type="file" accept=".txt,.epub,.html,.htm" onChange={handleFileUpload} className="hidden" />
             </div>
 
-            {library.length > 0 && (
+            {visibleLibrary.length > 0 && (
               <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
                 <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                  <BookOpen className="w-5 h-5" /> Tủ truyện ({library.length})
+                  <BookOpen className="w-5 h-5" /> Tủ truyện ({visibleLibrary.length})
                 </h2>
                 <div className="space-y-2">
-                  {library.map((e) => (
+                  {visibleLibrary.map((e) => (
                     <div key={e.sourceUrl} className={`flex items-center gap-3 p-2 rounded-xl ${theme.button}`}>
                       <button onClick={() => openLibraryEntry(e)} className="flex-1 min-w-0 flex items-center gap-3 text-left">
                         {e.cover
