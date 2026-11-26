@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl } from './sources';
+import MY_STORIES from './myStories';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -60,6 +61,7 @@ export default function StoryListenerApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [webUrl, setWebUrl] = useState('');
   const [isLoadingWeb, setIsLoadingWeb] = useState(false);
+  const [loadingDocId, setLoadingDocId] = useState(null);
   const [speechRate, setSpeechRate] = useState(1);
   const [voiceGender, setVoiceGender] = useState('female');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -651,8 +653,32 @@ export default function StoryListenerApp() {
     setIsLoadingWeb(false);
   };
 
+  // Mở truyện của tôi từ Google Docs; luôn tải bản mới nhất nên chương vừa viết thêm sẽ có ngay.
+  const openGoogleDoc = async (doc, startIndex) => {
+    const sourceUrl = googleDocUrl(doc.id);
+    setLoadingDocId(doc.id);
+    setErrorMsg('');
+    try {
+      const list = await loadGoogleDoc(doc.id);
+      const saved = library.find(e => e.sourceUrl === sourceUrl);
+      openStory(
+        { title: doc.title, author: '', cover: '', description: doc.description || '', sourceUrl, mode: 'gdoc', site: 'Google Docs', docId: doc.id },
+        list,
+        startIndex ?? saved?.lastIndex ?? 0,
+      );
+    } catch (error) {
+      setErrorMsg(`Không tải được "${doc.title}": ${error.message}`);
+    }
+    setLoadingDocId(null);
+  };
+
   const openLibraryEntry = (entry) => {
     const { chapters: list, lastIndex, lastTitle, updatedAt, ...info } = entry;
+    // Truyện Google Docs không lưu nội dung trong tủ truyện — tải lại tài liệu.
+    if (info.mode === 'gdoc') {
+      openGoogleDoc({ id: info.docId, title: info.title, description: info.description }, lastIndex);
+      return;
+    }
     openStory(info, list, lastIndex);
     // Cập nhật mục lục ở nền để thấy chương mới.
     if (info.mode === 'index') {
@@ -1145,6 +1171,28 @@ export default function StoryListenerApp() {
 
         {chapters.length === 0 && (
           <>
+            {MY_STORIES.length > 0 && (
+              <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+                <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <BookOpen className="w-5 h-5" /> Truyện của tôi
+                </h2>
+                <div className="space-y-2">
+                  {MY_STORIES.map((doc) => (
+                    <button key={doc.id} onClick={() => openGoogleDoc(doc)} disabled={!!loadingDocId}
+                      className={`w-full flex items-center gap-3 text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {loadingDocId === doc.id
+                        ? <Loader className={`w-5 h-5 flex-shrink-0 animate-spin ${theme.accent}`} />
+                        : <Play className={`w-5 h-5 flex-shrink-0 ${theme.accent}`} />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{doc.title}</div>
+                        {doc.description && <div className={`text-xs ${theme.textMuted} truncate`}>{doc.description}</div>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
               <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
                 <Search className="w-5 h-5" /> Tìm truyện

@@ -2,6 +2,15 @@
 
 Web nghe truyện audio: lấy truyện từ các trang khác (hoặc từ file TXT/EPUB/HTML) rồi đọc bằng giọng Edge TTS / giọng của trình duyệt, có highlight chữ, tự chuyển chương, điều khiển từ màn hình khoá và dịch AI cho truyện tiếng Trung.
 
+## Truyện của tôi (Google Docs)
+
+Trang chủ có mục **Truyện của tôi**, đọc thẳng từ Google Docs nên chương mới viết thêm sẽ có ngay khi mở lại. Danh sách nằm trong `src/myStories.js`. Muốn thêm truyện:
+
+1. Trong Google Docs: **Chia sẻ** → "Bất kỳ ai có đường liên kết" → **Người xem**.
+2. Thêm `{ id, title, description }` vào `src/myStories.js`, với `id` là đoạn giữa `docs.google.com/document/d/` và `/edit` trong link.
+
+Chương được tách theo các dòng tiêu đề dạng `CHƯƠNG 1: ...` (dòng "Quyển ..." được bỏ qua); tài liệu không có tiêu đề chương được đọc như một chương.
+
 ## Lấy truyện từ trang khác
 
 - **Tìm truyện** theo tên truyện hoặc tác giả trên TruyệnFull (đổi tên miền trong "Cài đặt nguồn & proxy").

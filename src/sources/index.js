@@ -84,3 +84,5 @@ export async function searchStories(query, origin = DEFAULT_SEARCH_ORIGIN) {
   const { html, url } = await fetchHtml(truyenfullAdapter.searchUrl(base, query));
   return truyenfullAdapter.parseSearch(parseHtml(html), url);
 }
+
+export { loadGoogleDoc, googleDocUrl } from './gdocs';
