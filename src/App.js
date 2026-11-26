@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, searchWeb, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy } from './sources';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl } from './sources';
+import MY_STORIES from './myStories';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -30,6 +31,8 @@ const PREFETCH_CHUNKS = 3; // Tăng lên 3 để chạy nền mượt hơn
 const TRANSLATE_BATCH_SIZE = 1500;
 const MAX_PARALLEL_TRANSLATES = 3;
 const LIBRARY_KEY = 'library_v1';
+// 0,05 giây im lặng (WAV hợp lệ) — dùng để "mở khoá" âm thanh trên iPhone.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA';
 const MAX_LIBRARY = 30;
 
 // Văn bản đã là tiếng Việt (nhiều dấu, không có chữ Hán) thì không cần dịch.
@@ -60,6 +63,7 @@ export default function StoryListenerApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [webUrl, setWebUrl] = useState('');
   const [isLoadingWeb, setIsLoadingWeb] = useState(false);
+  const [loadingDocId, setLoadingDocId] = useState(null);
   const [speechRate, setSpeechRate] = useState(1);
   const [voiceGender, setVoiceGender] = useState('female');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -88,7 +92,6 @@ export default function StoryListenerApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
   const [isSearching, setIsSearching] = useState(false);
-  const [searchType, setSearchType] = useState('story');
   const [searchOrigin, setSearchOrigin] = useState(() => localStorage.getItem('searchOrigin') || DEFAULT_SEARCH_ORIGIN);
   const [customProxy, setCustomProxyState] = useState(getCustomProxy);
   const [showSourceSettings, setShowSourceSettings] = useState(false);
@@ -247,9 +250,7 @@ export default function StoryListenerApp() {
     // Tạo 1 audio im lặng loop để giữ audio context sống
     if (silentAudioRef.current) return;
     
-    // WAV header cho 1 giây im lặng
-    const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
-    silentAudioRef.current = new Audio(silentWav);
+    silentAudioRef.current = new Audio(SILENT_WAV);
     silentAudioRef.current.loop = true;
     silentAudioRef.current.volume = 0.001; // Gần như im lặng
   }, []);
@@ -652,8 +653,32 @@ export default function StoryListenerApp() {
     setIsLoadingWeb(false);
   };
 
+  // Mở truyện của tôi từ Google Docs; luôn tải bản mới nhất nên chương vừa viết thêm sẽ có ngay.
+  const openGoogleDoc = async (doc, startIndex) => {
+    const sourceUrl = googleDocUrl(doc.id);
+    setLoadingDocId(doc.id);
+    setErrorMsg('');
+    try {
+      const list = await loadGoogleDoc(doc.id);
+      const saved = library.find(e => e.sourceUrl === sourceUrl);
+      openStory(
+        { title: doc.title, author: '', cover: '', description: doc.description || '', sourceUrl, mode: 'gdoc', site: 'Google Docs', docId: doc.id },
+        list,
+        startIndex ?? saved?.lastIndex ?? 0,
+      );
+    } catch (error) {
+      setErrorMsg(`Không tải được "${doc.title}": ${error.message}`);
+    }
+    setLoadingDocId(null);
+  };
+
   const openLibraryEntry = (entry) => {
     const { chapters: list, lastIndex, lastTitle, updatedAt, ...info } = entry;
+    // Truyện Google Docs không lưu nội dung trong tủ truyện — tải lại tài liệu.
+    if (info.mode === 'gdoc') {
+      openGoogleDoc({ id: info.docId, title: info.title, description: info.description }, lastIndex);
+      return;
+    }
     openStory(info, list, lastIndex);
     // Cập nhật mục lục ở nền để thấy chương mới.
     if (info.mode === 'index') {
@@ -678,16 +703,11 @@ export default function StoryListenerApp() {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     setErrorMsg('');
-    const q = searchQuery.trim();
-    // Tìm song song: trên trang truyện (giao diện TruyệnFull) và trên toàn web.
-    const [site, web] = await Promise.allSettled([searchStories(q, searchOrigin), searchWeb(q, searchType)]);
-    setSearchResults({
-      site: site.status === 'fulfilled' ? site.value : [],
-      siteError: site.status === 'rejected' ? site.reason.message : '',
-      web: web.status === 'fulfilled' ? web.value.results : [],
-      webProvider: web.status === 'fulfilled' ? web.value.provider : '',
-      webError: web.status === 'rejected' ? web.reason.message : '',
-    });
+    try {
+      setSearchResults(await searchStories(searchQuery.trim(), searchOrigin));
+    } catch (error) {
+      setErrorMsg('Tìm kiếm thất bại: ' + error.message);
+    }
     setIsSearching(false);
   };
 
@@ -893,6 +913,12 @@ export default function StoryListenerApp() {
         setIsLoadingAudio(false);
         setIsPlaying(false);
         console.error('Edge TTS error:', error);
+        // Trình duyệt (thường là Safari trên iPhone) chặn phát vì không còn trong lúc bấm nút:
+        // giọng nhanh cũng sẽ bị chặn y như vậy, nên chỉ cần bấm Play lại.
+        if (error.name === 'NotAllowedError') {
+          setErrorMsg('Trình duyệt chặn phát âm thanh — bấm Play lại để nghe');
+          return;
+        }
         setErrorMsg(`Lỗi Edge TTS (${error.message}), tạm chuyển sang giọng nhanh`);
         setTimeout(() => {
           setTtsMode('web');
@@ -988,6 +1014,20 @@ export default function StoryListenerApp() {
       releaseWakeLock();
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     } else {
+      // Safari trên iPhone chỉ cho phát âm thanh ngay trong lần bấm. Âm thanh Edge tải từ máy chủ
+      // nên phát sau đó vài giây, vì vậy "mở khoá" trình phát ngay bây giờ bằng một đoạn im lặng;
+      // các đoạn sau phát trên cùng phần tử này sẽ có tiếng.
+      if (ttsMode === 'edge') {
+        if (!audioRef.current) audioRef.current = new Audio();
+        const audio = audioRef.current;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onloadedmetadata = null;
+        audio.src = SILENT_WAV;
+        audio.play().catch(() => {});
+      } else if (window.speechSynthesis) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+      }
       // 🆕 Kích hoạt silent audio khi bắt đầu (giữ session)
       createSilentAudio();
       if (silentAudioRef.current) {
@@ -1151,21 +1191,35 @@ export default function StoryListenerApp() {
 
         {chapters.length === 0 && (
           <>
+            {MY_STORIES.length > 0 && (
+              <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
+                <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <BookOpen className="w-5 h-5" /> Truyện của tôi
+                </h2>
+                <div className="space-y-2">
+                  {MY_STORIES.map((doc) => (
+                    <button key={doc.id} onClick={() => openGoogleDoc(doc)} disabled={!!loadingDocId}
+                      className={`w-full flex items-center gap-3 text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {loadingDocId === doc.id
+                        ? <Loader className={`w-5 h-5 flex-shrink-0 animate-spin ${theme.accent}`} />
+                        : <Play className={`w-5 h-5 flex-shrink-0 ${theme.accent}`} />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{doc.title}</div>
+                        {doc.description && <div className={`text-xs ${theme.textMuted} truncate`}>{doc.description}</div>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
               <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
                 <Search className="w-5 h-5" /> Tìm truyện
               </h2>
-              <div className="flex gap-2 mb-2">
-                {[['story', '📖 Tên truyện'], ['author', '✍️ Tác giả']].map(([type, label]) => (
-                  <button key={type} onClick={() => setSearchType(type)}
-                    className={`flex-1 py-1.5 rounded-lg text-sm ${searchType === type ? theme.buttonPrimary : theme.button}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
               <div className="flex gap-2">
                 <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={searchType === 'author' ? 'Tên tác giả...' : 'Tên truyện...'}
+                  placeholder="Tên truyện hoặc tác giả..."
                   className={`flex-1 min-w-0 px-4 py-3 rounded-xl ${theme.input} border focus:outline-none focus:ring-2 focus:ring-amber-500`}
                   onKeyDown={(e) => e.key === 'Enter' && runSearch()} />
                 <button onClick={runSearch} disabled={isSearching}
@@ -1174,43 +1228,20 @@ export default function StoryListenerApp() {
                 </button>
               </div>
               {searchResults && (
-                <div className="mt-3 max-h-[28rem] overflow-y-auto space-y-4">
-                  <div>
-                    <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>📚 Trên TruyệnFull ({searchResults.site.length})</p>
-                    {searchResults.siteError && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {searchResults.siteError}</p>}
-                    {!searchResults.siteError && searchResults.site.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
-                    <div className="space-y-2">
-                      {searchResults.site.map((r) => (
-                        <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
-                          className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
-                          {r.cover
-                            ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
-                            : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate">{r.title}</div>
-                            <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className={`text-xs font-semibold mb-2 ${theme.textMuted}`}>
-                      🌐 Trên web ({searchResults.web.length}){searchResults.webProvider && ` • ${searchResults.webProvider === 'brave' ? 'Brave Search' : 'DuckDuckGo'}`}
-                    </p>
-                    {searchResults.webError && <p className={`text-xs ${theme.textMuted}`}>Không tìm được: {searchResults.webError}</p>}
-                    {!searchResults.webError && searchResults.web.length === 0 && <p className={`text-xs ${theme.textMuted}`}>Không có kết quả.</p>}
-                    <div className="space-y-2">
-                      {searchResults.web.map((r) => (
-                        <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
-                          className={`w-full text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
-                          <div className="font-semibold text-sm line-clamp-2">{r.title}</div>
-                          <div className={`text-xs ${theme.accent} truncate`}>{r.host}</div>
-                          {r.description && <div className={`text-xs ${theme.textMuted} line-clamp-2 mt-0.5`}>{r.description}</div>}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                <div className="mt-3 max-h-96 overflow-y-auto space-y-2">
+                  {searchResults.length === 0 && <p className={`text-sm ${theme.textMuted}`}>Không tìm thấy truyện nào trên TruyệnFull.</p>}
+                  {searchResults.map((r) => (
+                    <button key={r.url} onClick={() => openUrl(r.url)} disabled={isLoadingWeb}
+                      className={`w-full flex gap-3 items-center text-left p-2 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {r.cover
+                        ? <img src={r.cover} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} className="w-10 h-14 object-cover rounded flex-shrink-0" />
+                        : <BookOpen className="w-10 h-10 p-2 flex-shrink-0 opacity-60" />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{r.title}</div>
+                        <div className={`text-xs ${theme.textMuted} truncate`}>{[r.author, r.info].filter(Boolean).join(' • ')}</div>
+                      </div>
+                    </button>
+                  ))}
                   {isLoadingWeb && <p className={`text-xs ${theme.accent}`}>{loadProgress || 'Đang mở truyện...'}</p>}
                 </div>
               )}

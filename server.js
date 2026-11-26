@@ -3,7 +3,6 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const proxy = require('./api/proxy');
-const search = require('./api/search');
 
 const PORT = process.env.PORT || 3000;
 const BUILD = path.join(__dirname, 'build');
@@ -16,7 +15,6 @@ const TYPES = {
 http.createServer((req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (pathname === '/api/proxy') return proxy(req, res);
-  if (pathname === '/api/search') return search(req, res);
   let file = path.normalize(path.join(BUILD, decodeURIComponent(pathname)));
   if (!file.startsWith(BUILD) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     file = path.join(BUILD, 'index.html');
