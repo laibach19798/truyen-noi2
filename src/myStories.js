@@ -3,7 +3,7 @@
 // Thêm truyện mới: copy id trong link docs.google.com/document/d/<id>/edit vào danh sách.
 const MY_STORIES = [
   {
-    id: '1iYRS-_sDACne-yoaUQoDILwE1c1bAR3C8r4U75dYeWw',
+    id: '1EO0BTizk0uL_B-taVgza9U1Ntab2d_iFglzO_loZg7Y',
     title: 'Tẫn Mệnh Lục',
     description: 'Quyển 1: Rìa Sương Mù',
   },
