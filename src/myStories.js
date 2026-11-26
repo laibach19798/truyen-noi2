@@ -5,7 +5,7 @@ const MY_STORIES = [
   {
     id: '1yhiWnl5A-1FUU56Ja-2K6RrTi_hW07di38uGNKrgKDk',
     title: 'Tẫn Mệnh Giản',
-    description: 'Chương 1: Mực Tro',
+    description: 'Truyện sáng tác — cập nhật từ Google Docs',
   },
 ];
 
