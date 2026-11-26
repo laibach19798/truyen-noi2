@@ -3,14 +3,9 @@
 // Thêm truyện mới: copy id trong link docs.google.com/document/d/<id>/edit vào danh sách.
 const MY_STORIES = [
   {
-    id: '1EO0BTizk0uL_B-taVgza9U1Ntab2d_iFglzO_loZg7Y',
-    title: 'Tẫn Mệnh Lục',
-    description: 'Quyển 1: Rìa Sương Mù',
-  },
-  {
-    id: '1Ssy4NefcLHy5IILzpnWPYwwP3HUmskC9XVDNeoTQNU0',
-    title: 'Tro Tàn Dưới Đáy Cốc',
-    description: 'Chương 3 – 4',
+    id: '1yhiWnl5A-1FUU56Ja-2K6RrTi_hW07di38uGNKrgKDk',
+    title: 'Tẫn Mệnh Giản',
+    description: 'Truyện sáng tác — cập nhật từ Google Docs',
   },
 ];
 
