@@ -31,6 +31,8 @@ const PREFETCH_CHUNKS = 3; // Tăng lên 3 để chạy nền mượt hơn
 const TRANSLATE_BATCH_SIZE = 1500;
 const MAX_PARALLEL_TRANSLATES = 3;
 const LIBRARY_KEY = 'library_v1';
+// 0,05 giây im lặng (WAV hợp lệ) — dùng để "mở khoá" âm thanh trên iPhone.
+const SILENT_WAV = 'data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA';
 const MAX_LIBRARY = 30;
 
 // Văn bản đã là tiếng Việt (nhiều dấu, không có chữ Hán) thì không cần dịch.
@@ -248,9 +250,7 @@ export default function StoryListenerApp() {
     // Tạo 1 audio im lặng loop để giữ audio context sống
     if (silentAudioRef.current) return;
     
-    // WAV header cho 1 giây im lặng
-    const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
-    silentAudioRef.current = new Audio(silentWav);
+    silentAudioRef.current = new Audio(SILENT_WAV);
     silentAudioRef.current.loop = true;
     silentAudioRef.current.volume = 0.001; // Gần như im lặng
   }, []);
@@ -913,6 +913,12 @@ export default function StoryListenerApp() {
         setIsLoadingAudio(false);
         setIsPlaying(false);
         console.error('Edge TTS error:', error);
+        // Trình duyệt (thường là Safari trên iPhone) chặn phát vì không còn trong lúc bấm nút:
+        // giọng nhanh cũng sẽ bị chặn y như vậy, nên chỉ cần bấm Play lại.
+        if (error.name === 'NotAllowedError') {
+          setErrorMsg('Trình duyệt chặn phát âm thanh — bấm Play lại để nghe');
+          return;
+        }
         setErrorMsg(`Lỗi Edge TTS (${error.message}), tạm chuyển sang giọng nhanh`);
         setTimeout(() => {
           setTtsMode('web');
@@ -1008,6 +1014,20 @@ export default function StoryListenerApp() {
       releaseWakeLock();
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     } else {
+      // Safari trên iPhone chỉ cho phát âm thanh ngay trong lần bấm. Âm thanh Edge tải từ máy chủ
+      // nên phát sau đó vài giây, vì vậy "mở khoá" trình phát ngay bây giờ bằng một đoạn im lặng;
+      // các đoạn sau phát trên cùng phần tử này sẽ có tiếng.
+      if (ttsMode === 'edge') {
+        if (!audioRef.current) audioRef.current = new Audio();
+        const audio = audioRef.current;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onloadedmetadata = null;
+        audio.src = SILENT_WAV;
+        audio.play().catch(() => {});
+      } else if (window.speechSynthesis) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+      }
       // 🆕 Kích hoạt silent audio khi bắt đầu (giữ session)
       createSilentAudio();
       if (silentAudioRef.current) {
