@@ -1,7 +1,10 @@
 import { fetchHtml, mapLimit } from './fetcher';
 import { parseHtml, pickAdapter, truyenfullAdapter, normalizeOrder, fillSequentialChapters } from './parsers';
 
+import { isLocalUrl, loadLocalChapter } from './local';
+
 export { getCustomProxy, setCustomProxy } from './fetcher';
+export { listLocalStories, loadLocalStory } from './local';
 
 const chapterCache = new Map();
 const MAX_CACHED_CHAPTERS = 60;
@@ -68,6 +71,12 @@ export function loadChapter(url) {
   if (chapterCache.has(url)) return Promise.resolve(chapterCache.get(url));
   if (inflight.has(url)) return inflight.get(url);
   const p = (async () => {
+    if (isLocalUrl(url)) {
+      const chapter = await loadLocalChapter(url);
+      if (!chapter.content) throw new Error('Chương trống');
+      remember(url, chapter);
+      return chapter;
+    }
     const { html, url: finalUrl } = await fetchHtml(url);
     const doc = parseHtml(html);
     const chapter = pickAdapter(doc).parseChapter(doc, finalUrl);

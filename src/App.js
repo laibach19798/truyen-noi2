@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl } from './sources';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listLocalStories, loadLocalStory } from './sources';
 import MY_STORIES from './myStories';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
@@ -96,7 +96,8 @@ export default function StoryListenerApp() {
   const [customProxy, setCustomProxyState] = useState(getCustomProxy);
   const [showSourceSettings, setShowSourceSettings] = useState(false);
   const [library, setLibrary] = useState(readLibrary);
-  
+  const [localStories, setLocalStories] = useState([]);
+
   // REFS
   const audioRef = useRef(null);
   const nextAudioRef = useRef(null); // 🆕 Audio thứ 2 để preload
@@ -672,6 +673,24 @@ export default function StoryListenerApp() {
     setLoadingDocId(null);
   };
 
+  // Truyện viết sẵn trong app (public/truyen), hiện chung mục "Truyện của tôi".
+  useEffect(() => {
+    listLocalStories().then(setLocalStories).catch(() => {});
+  }, []);
+
+  const openLocalStory = async (entry) => {
+    setLoadingDocId(`local:${entry.slug}`);
+    setErrorMsg('');
+    try {
+      const { story: info, chapters: list } = await loadLocalStory(entry);
+      const saved = library.find(e => e.sourceUrl === info.sourceUrl);
+      openStory(info, list, saved?.lastIndex || 0);
+    } catch (error) {
+      setErrorMsg(`Không mở được "${entry.title}": ${error.message}`);
+    }
+    setLoadingDocId(null);
+  };
+
   const openLibraryEntry = (entry) => {
     const { chapters: list, lastIndex, lastTitle, updatedAt, ...info } = entry;
     // Truyện Google Docs không lưu nội dung trong tủ truyện — tải lại tài liệu.
@@ -680,6 +699,15 @@ export default function StoryListenerApp() {
       return;
     }
     openStory(info, list, lastIndex);
+    // Truyện sáng tác: lấy mục lục mới nhất (có thể vừa thêm chương).
+    if (info.mode === 'local' && info.slug) {
+      loadLocalStory(info).then(({ chapters: fresh }) => {
+        if (storyRef.current?.sourceUrl !== info.sourceUrl || fresh.length <= chaptersRef.current.length) return;
+        const updated = [...chaptersRef.current, ...fresh.slice(chaptersRef.current.length)];
+        chaptersRef.current = updated;
+        setChapters(updated);
+      }).catch(() => {});
+    }
     // Cập nhật mục lục ở nền để thấy chương mới.
     if (info.mode === 'index') {
       loadFromUrl(info.sourceUrl).then(({ chapters: fresh }) => {
@@ -1191,7 +1219,7 @@ export default function StoryListenerApp() {
 
         {chapters.length === 0 && (
           <>
-            {MY_STORIES.length > 0 && (
+            {(MY_STORIES.length > 0 || localStories.length > 0) && (
               <div className={`${theme.card} border rounded-2xl p-5 mb-4`}>
                 <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
                   <BookOpen className="w-5 h-5" /> Truyện của tôi
@@ -1206,6 +1234,18 @@ export default function StoryListenerApp() {
                       <div className="min-w-0">
                         <div className="font-semibold truncate">{doc.title}</div>
                         {doc.description && <div className={`text-xs ${theme.textMuted} truncate`}>{doc.description}</div>}
+                      </div>
+                    </button>
+                  ))}
+                  {localStories.map((s) => (
+                    <button key={s.slug} onClick={() => openLocalStory(s)} disabled={!!loadingDocId}
+                      className={`w-full flex items-center gap-3 text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
+                      {loadingDocId === `local:${s.slug}`
+                        ? <Loader className={`w-5 h-5 flex-shrink-0 animate-spin ${theme.accent}`} />
+                        : <Play className={`w-5 h-5 flex-shrink-0 ${theme.accent}`} />}
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{s.title}</div>
+                        {s.description && <div className={`text-xs ${theme.textMuted} line-clamp-2`}>{s.description}</div>}
                       </div>
                     </button>
                   ))}
