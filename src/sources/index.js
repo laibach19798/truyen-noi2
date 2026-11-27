@@ -2,6 +2,7 @@ import { fetchHtml, mapLimit } from './fetcher';
 import { parseHtml, pickAdapter, truyenfullAdapter, normalizeOrder, fillSequentialChapters } from './parsers';
 
 import { isLocalUrl, loadLocalChapter } from './local';
+import { isGoogleDocExportUrl, loadDriveChapter } from './gdocs';
 
 export { getCustomProxy, setCustomProxy } from './fetcher';
 export { listLocalStories, loadLocalStory } from './local';
@@ -77,6 +78,12 @@ export function loadChapter(url) {
       remember(url, chapter);
       return chapter;
     }
+    if (isGoogleDocExportUrl(url)) {
+      const chapter = await loadDriveChapter(url);
+      if (!chapter.content) throw new Error('Chương trống');
+      remember(url, chapter);
+      return chapter;
+    }
     const { html, url: finalUrl } = await fetchHtml(url);
     const doc = parseHtml(html);
     const chapter = pickAdapter(doc).parseChapter(doc, finalUrl);
@@ -94,4 +101,4 @@ export async function searchStories(query, origin = DEFAULT_SEARCH_ORIGIN) {
   return truyenfullAdapter.parseSearch(parseHtml(html), url);
 }
 
-export { loadGoogleDoc, googleDocUrl } from './gdocs';
+export { loadGoogleDoc, googleDocUrl, listDriveFolder, driveFolderUrl } from './gdocs';

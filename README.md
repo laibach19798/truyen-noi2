@@ -11,6 +11,10 @@ Trang chủ có mục **Truyện của tôi**, đọc thẳng từ Google Docs n
 
 Chương được tách theo các dòng tiêu đề dạng `CHƯƠNG 1: ...` (dòng "Quyển ..." được bỏ qua); tài liệu không có tiêu đề chương được đọc như một chương.
 
+### Thư mục Google Drive (mỗi chương một tệp)
+
+Nếu mỗi chương là một Google Docs riêng trong cùng một thư mục: mở quyền thư mục "Bất kỳ ai có đường liên kết" → **Người xem**, rồi thêm `{ folderId, title, description }` vào `src/myStories.js` (`folderId` là đoạn sau `drive.google.com/drive/folders/`). Chương được xếp theo số trong tên tệp (`Chương 01: ...`); chỉ các tệp Google Docs được tính. Viết thêm một tệp chương mới vào thư mục là web tự thấy: khi mở truyện, mỗi 3 phút khi đang mở trang, khi quay lại tab, khi nghe hết chương cuối, hoặc khi bấm **Cập nhật chương**. Nội dung từng chương chỉ tải khi nghe tới, và sửa nội dung chương cũ thì có hiệu lực khi mở lại truyện hoặc tải lại trang.
+
 ## Lấy truyện từ trang khác
 
 - **Tìm truyện** theo tên truyện hoặc tác giả trên TruyệnFull (đổi tên miền trong "Cài đặt nguồn & proxy").

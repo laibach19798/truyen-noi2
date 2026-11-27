@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2, RefreshCw } from 'lucide-react';
-import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listLocalStories, loadLocalStory } from './sources';
+import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listDriveFolder, driveFolderUrl, listLocalStories, loadLocalStory } from './sources';
 import MY_STORIES from './myStories';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
@@ -675,21 +675,52 @@ export default function StoryListenerApp() {
     setLoadingDocId(null);
   };
 
-  // Tải lại tài liệu Google Docs đang nghe mà không tải lại trang: thêm chương mới, cập nhật chương đã sửa,
+  // Mở truyện của tôi từ một thư mục Google Drive (mỗi chương là một Google Docs). Danh sách chương luôn lấy mới,
+  // nội dung từng chương chỉ tải khi nghe tới.
+  const openDriveFolder = async (doc, startIndex) => {
+    const sourceUrl = driveFolderUrl(doc.folderId);
+    setLoadingDocId(doc.folderId);
+    setErrorMsg('');
+    try {
+      const list = await listDriveFolder(doc.folderId);
+      const saved = library.find(e => e.sourceUrl === sourceUrl);
+      openStory(
+        { title: doc.title, author: '', cover: '', description: doc.description || '', sourceUrl, mode: 'gdrive', site: 'Google Drive', folderId: doc.folderId },
+        list,
+        startIndex ?? saved?.lastIndex ?? 0,
+      );
+    } catch (error) {
+      setErrorMsg(`Không tải được "${doc.title}": ${error.message}`);
+    }
+    setLoadingDocId(null);
+  };
+
+  // Tải lại truyện Google Docs / thư mục Google Drive đang nghe mà không tải lại trang: thêm chương mới, cập nhật chương đã sửa,
   // giữ nguyên chương đang nghe (chương đang phát giữ nội dung cũ để không bị nhảy giữa chừng).
   // Trả về số chương mới, hoặc -1 nếu không tải được.
   const refreshGoogleDoc = useCallback(async ({ quiet = false } = {}) => {
     const info = storyRef.current;
-    if (info?.mode !== 'gdoc' || !info.docId) return -1;
+    const isDrive = info?.mode === 'gdrive';
+    if (!(isDrive ? info.folderId : info?.mode === 'gdoc' && info.docId)) return -1;
     setIsRefreshingDoc(true);
     if (!quiet) { setErrorMsg(''); setNotice(''); }
     try {
-      const fresh = await loadGoogleDoc(info.docId);
-      if (storyRef.current?.docId !== info.docId) return -1; // đã đổi truyện trong lúc tải
+      const fresh = isDrive ? await listDriveFolder(info.folderId) : await loadGoogleDoc(info.docId);
+      if (storyRef.current?.sourceUrl !== info.sourceUrl) return -1; // đã đổi truyện trong lúc tải
       const old = chaptersRef.current;
       const playingIdx = isPlayingRef.current ? currentChapterIndexRef.current : -1;
-      const updated = fresh.map((c, i) => (i === playingIdx && old[i] ? old[i] : c));
-      const changed = new Set(updated.map((c, i) => i).filter(i => !old[i] || old[i].content !== updated[i].content || old[i].title !== updated[i].title));
+      // Thư mục Drive: chương đã tải giữ nguyên nội dung (khớp theo link); Google Docs đơn: thay bằng bản mới.
+      const oldByUrl = isDrive ? new Map(old.map(c => [c.url, c])) : null;
+      const updated = fresh.map((c, i) => (isDrive
+        ? { ...oldByUrl.get(c.url), ...c }
+        : (i === playingIdx && old[i] ? old[i] : c)));
+      const changed = new Set(updated.map((c, i) => i).filter(i => !old[i]
+        || (isDrive ? old[i].url !== updated[i].url : old[i].content !== updated[i].content)
+        || old[i].title !== updated[i].title));
+      // Chèn chương vào giữa làm lệch số thứ tự: đi theo chương đang nghe.
+      const curUrl = isDrive ? old[currentChapterIndexRef.current]?.url : null;
+      const movedTo = curUrl ? updated.findIndex(c => c.url === curUrl) : -1;
+      if (movedTo >= 0 && movedTo !== currentChapterIndexRef.current) setCurrentChapterIndex(movedTo);
       // Bỏ âm thanh / đoạn đã tách của các chương bị sửa.
       for (const cache of [audioCacheRef.current, chunksCacheRef.current]) {
         for (const key of [...cache.keys()]) {
@@ -720,6 +751,21 @@ export default function StoryListenerApp() {
   const refreshGoogleDocRef = useRef(refreshGoogleDoc);
   useEffect(() => { refreshGoogleDocRef.current = refreshGoogleDoc; }, [refreshGoogleDoc]);
 
+  // Tự kiểm tra chương mới khi đang mở truyện Google Docs / Drive: mỗi 3 phút, và ngay khi quay lại tab.
+  const liveStoryUrl = (story?.mode === 'gdoc' || story?.mode === 'gdrive') ? story.sourceUrl : '';
+  useEffect(() => {
+    if (!liveStoryUrl) return;
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      refreshGoogleDocRef.current({ quiet: true }).then(added => {
+        if (added > 0) setNotice(`Có ${added} chương mới`);
+      });
+    };
+    const timer = setInterval(check, 3 * 60 * 1000);
+    document.addEventListener('visibilitychange', check);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', check); };
+  }, [liveStoryUrl]);
+
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(''), 4000);
@@ -749,6 +795,10 @@ export default function StoryListenerApp() {
     // Truyện Google Docs không lưu nội dung trong tủ truyện — tải lại tài liệu.
     if (info.mode === 'gdoc') {
       openGoogleDoc({ id: info.docId, title: info.title, description: info.description }, lastIndex);
+      return;
+    }
+    if (info.mode === 'gdrive') {
+      openDriveFolder({ folderId: info.folderId, title: info.title, description: info.description }, lastIndex);
       return;
     }
     openStory(info, list, lastIndex);
@@ -925,7 +975,7 @@ export default function StoryListenerApp() {
             setIsPlaying(false);
             setErrorMsg('Không tải được chương tiếp: ' + e.message);
           });
-      } else if (autoNextRef.current && storyRef.current?.mode === 'gdoc') {
+      } else if (autoNextRef.current && (storyRef.current?.mode === 'gdoc' || storyRef.current?.mode === 'gdrive')) {
         // Hết chương cuối của truyện Google Docs: xem tác giả đã viết thêm chưa rồi đọc tiếp.
         setIsLoadingAudio(true);
         refreshGoogleDocRef.current({ quiet: true }).then(added => {
@@ -1039,7 +1089,7 @@ export default function StoryListenerApp() {
             setIsPlaying(false);
             setErrorMsg('Không tải được chương tiếp: ' + e.message);
           });
-      } else if (autoNextRef.current && storyRef.current?.mode === 'gdoc') {
+      } else if (autoNextRef.current && (storyRef.current?.mode === 'gdoc' || storyRef.current?.mode === 'gdrive')) {
         refreshGoogleDocRef.current({ quiet: true }).then(added => {
           if (added > 0) {
             setCurrentChapterIndex(chapterIdx + 1);
@@ -1217,6 +1267,7 @@ export default function StoryListenerApp() {
   // Truyện của tôi / truyện sáng tác đã gỡ khỏi web thì không hiện trong tủ truyện nữa.
   const visibleLibrary = library.filter(e =>
     (e.mode !== 'gdoc' || MY_STORIES.some(d => d.id === e.docId)) &&
+    (e.mode !== 'gdrive' || MY_STORIES.some(d => d.folderId === e.folderId)) &&
     (e.mode !== 'local' || localStories.some(s => s.slug === e.slug)));
 
   const currentChapter = chapters[currentChapterIndex] || {};
@@ -1318,9 +1369,9 @@ export default function StoryListenerApp() {
                 </h2>
                 <div className="space-y-2">
                   {MY_STORIES.map((doc) => (
-                    <button key={doc.id} onClick={() => openGoogleDoc(doc)} disabled={!!loadingDocId}
+                    <button key={doc.folderId || doc.id} onClick={() => (doc.folderId ? openDriveFolder(doc) : openGoogleDoc(doc))} disabled={!!loadingDocId}
                       className={`w-full flex items-center gap-3 text-left p-3 rounded-xl ${theme.button} disabled:opacity-50`}>
-                      {loadingDocId === doc.id
+                      {loadingDocId === (doc.folderId || doc.id)
                         ? <Loader className={`w-5 h-5 flex-shrink-0 animate-spin ${theme.accent}`} />
                         : <Play className={`w-5 h-5 flex-shrink-0 ${theme.accent}`} />}
                       <div className="min-w-0">
@@ -1560,8 +1611,8 @@ export default function StoryListenerApp() {
                     {[story.author, story.site, (() => { try { return new URL(story.sourceUrl).hostname; } catch (e) { return ''; } })()].filter(Boolean).join(' • ')}
                   </div>
                 </div>
-                {story.mode === 'gdoc' && (
-                  <button onClick={() => refreshGoogleDoc()} disabled={isRefreshingDoc} title="Tải lại các chương từ Google Docs"
+                {(story.mode === 'gdoc' || story.mode === 'gdrive') && (
+                  <button onClick={() => refreshGoogleDoc()} disabled={isRefreshingDoc} title="Tải lại danh sách chương từ Google Docs / Drive"
                     className={`${theme.button} flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-50`}>
                     <RefreshCw className={`w-4 h-4 ${isRefreshingDoc ? 'animate-spin' : ''}`} />
                     {isRefreshingDoc ? 'Đang tải...' : 'Cập nhật chương'}
