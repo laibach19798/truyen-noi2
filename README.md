@@ -4,7 +4,7 @@ Web nghe truyện audio: lấy truyện từ các trang khác (hoặc từ file 
 
 ## Truyện của tôi (Google Docs)
 
-Trang chủ có mục **Truyện của tôi**, đọc thẳng từ Google Docs nên chương mới viết thêm sẽ có ngay khi mở lại. Danh sách nằm trong `src/myStories.js`. Muốn thêm truyện:
+Trang chủ có mục **Truyện của tôi**, đọc thẳng từ Google Docs nên chương mới viết thêm sẽ có ngay khi mở lại. Đang nghe thì bấm **Cập nhật chương** để tải lại tài liệu mà không cần tải lại trang (giữ nguyên chương đang nghe); khi nghe hết chương cuối, app cũng tự kiểm tra chương mới và đọc tiếp. Danh sách nằm trong `src/myStories.js`. Muốn thêm truyện:
 
 1. Trong Google Docs: **Chia sẻ** → "Bất kỳ ai có đường liên kết" → **Người xem**.
 2. Thêm `{ id, title, description }` vào `src/myStories.js`, với `id` là đoạn giữa `docs.google.com/document/d/` và `/edit` trong link.

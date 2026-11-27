@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
+import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2, RefreshCw } from 'lucide-react';
 import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listLocalStories, loadLocalStory } from './sources';
 import MY_STORIES from './myStories';
 
@@ -64,6 +64,8 @@ export default function StoryListenerApp() {
   const [webUrl, setWebUrl] = useState('');
   const [isLoadingWeb, setIsLoadingWeb] = useState(false);
   const [loadingDocId, setLoadingDocId] = useState(null);
+  const [isRefreshingDoc, setIsRefreshingDoc] = useState(false);
+  const [notice, setNotice] = useState('');
   const [speechRate, setSpeechRate] = useState(1);
   const [voiceGender, setVoiceGender] = useState('female');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
@@ -673,6 +675,57 @@ export default function StoryListenerApp() {
     setLoadingDocId(null);
   };
 
+  // Tải lại tài liệu Google Docs đang nghe mà không tải lại trang: thêm chương mới, cập nhật chương đã sửa,
+  // giữ nguyên chương đang nghe (chương đang phát giữ nội dung cũ để không bị nhảy giữa chừng).
+  // Trả về số chương mới, hoặc -1 nếu không tải được.
+  const refreshGoogleDoc = useCallback(async ({ quiet = false } = {}) => {
+    const info = storyRef.current;
+    if (info?.mode !== 'gdoc' || !info.docId) return -1;
+    setIsRefreshingDoc(true);
+    if (!quiet) { setErrorMsg(''); setNotice(''); }
+    try {
+      const fresh = await loadGoogleDoc(info.docId);
+      if (storyRef.current?.docId !== info.docId) return -1; // đã đổi truyện trong lúc tải
+      const old = chaptersRef.current;
+      const playingIdx = isPlayingRef.current ? currentChapterIndexRef.current : -1;
+      const updated = fresh.map((c, i) => (i === playingIdx && old[i] ? old[i] : c));
+      const changed = new Set(updated.map((c, i) => i).filter(i => !old[i] || old[i].content !== updated[i].content || old[i].title !== updated[i].title));
+      // Bỏ âm thanh / đoạn đã tách của các chương bị sửa.
+      for (const cache of [audioCacheRef.current, chunksCacheRef.current]) {
+        for (const key of [...cache.keys()]) {
+          if (changed.has(Number(key.split('_')[0]))) {
+            if (cache === audioCacheRef.current) URL.revokeObjectURL(cache.get(key));
+            cache.delete(key);
+          }
+        }
+      }
+      chaptersRef.current = updated;
+      setChapters(updated);
+      if (currentChapterIndexRef.current >= updated.length) setCurrentChapterIndex(updated.length - 1);
+      const added = Math.max(0, fresh.length - old.length);
+      const edited = [...changed].filter(i => i < old.length).length;
+      if (!quiet) {
+        setNotice(added || edited
+          ? [added && `thêm ${added} chương mới`, edited && `cập nhật ${edited} chương`].filter(Boolean).join(', ').replace(/^./, m => m.toUpperCase())
+          : 'Chưa có chương mới');
+      }
+      return added;
+    } catch (error) {
+      if (!quiet) setErrorMsg('Không cập nhật được: ' + error.message);
+      return -1;
+    } finally {
+      setIsRefreshingDoc(false);
+    }
+  }, []);
+  const refreshGoogleDocRef = useRef(refreshGoogleDoc);
+  useEffect(() => { refreshGoogleDocRef.current = refreshGoogleDoc; }, [refreshGoogleDoc]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(''), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   // Truyện viết sẵn trong app (public/truyen), hiện chung mục "Truyện của tôi".
   useEffect(() => {
     listLocalStories().then(setLocalStories).catch(() => {});
@@ -872,6 +925,22 @@ export default function StoryListenerApp() {
             setIsPlaying(false);
             setErrorMsg('Không tải được chương tiếp: ' + e.message);
           });
+      } else if (autoNextRef.current && storyRef.current?.mode === 'gdoc') {
+        // Hết chương cuối của truyện Google Docs: xem tác giả đã viết thêm chưa rồi đọc tiếp.
+        setIsLoadingAudio(true);
+        refreshGoogleDocRef.current({ quiet: true }).then(added => {
+          if (added > 0) {
+            setCurrentChapterIndex(chapterIdx + 1);
+            setCurrentChunkIndex(0);
+            setTimeout(() => playChunk(chapterIdx + 1, 0), 300);
+          } else {
+            setIsLoadingAudio(false);
+            setIsPlaying(false);
+            setCurrentWordIndex(-1);
+            releaseWakeLock();
+            setNotice('Đã nghe hết các chương hiện có');
+          }
+        });
       } else {
         setIsPlaying(false);
         setCurrentWordIndex(-1);
@@ -970,6 +1039,18 @@ export default function StoryListenerApp() {
             setIsPlaying(false);
             setErrorMsg('Không tải được chương tiếp: ' + e.message);
           });
+      } else if (autoNextRef.current && storyRef.current?.mode === 'gdoc') {
+        refreshGoogleDocRef.current({ quiet: true }).then(added => {
+          if (added > 0) {
+            setCurrentChapterIndex(chapterIdx + 1);
+            setCurrentChunkIndex(0);
+            setTimeout(() => playChunkWebSpeech(chapterIdx + 1, 0), 300);
+          } else {
+            setIsPlaying(false);
+            releaseWakeLock();
+            setNotice('Đã nghe hết các chương hiện có');
+          }
+        });
       } else {
         setIsPlaying(false);
         releaseWakeLock();
@@ -1215,6 +1296,12 @@ export default function StoryListenerApp() {
             </button>
           </div>
         </div>
+
+        {notice && (
+          <div className="bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 px-4 py-3 rounded-xl mb-4">
+            ✅ {notice}
+          </div>
+        )}
 
         {errorMsg && (
           <div className="bg-red-500/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-xl mb-4">
@@ -1467,12 +1554,19 @@ export default function StoryListenerApp() {
                 {story.cover
                   ? <img src={story.cover} alt="" referrerPolicy="no-referrer" className="w-12 h-16 object-cover rounded flex-shrink-0" />
                   : <BookOpen className={`w-10 h-10 p-1 flex-shrink-0 ${theme.accent}`} />}
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="font-semibold truncate">{story.title}</div>
                   <div className={`text-xs ${theme.textMuted} truncate`}>
                     {[story.author, story.site, (() => { try { return new URL(story.sourceUrl).hostname; } catch (e) { return ''; } })()].filter(Boolean).join(' • ')}
                   </div>
                 </div>
+                {story.mode === 'gdoc' && (
+                  <button onClick={() => refreshGoogleDoc()} disabled={isRefreshingDoc} title="Tải lại các chương từ Google Docs"
+                    className={`${theme.button} flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-50`}>
+                    <RefreshCw className={`w-4 h-4 ${isRefreshingDoc ? 'animate-spin' : ''}`} />
+                    {isRefreshingDoc ? 'Đang tải...' : 'Cập nhật chương'}
+                  </button>
+                )}
               </div>
             )}
 
