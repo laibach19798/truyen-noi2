@@ -1,5 +1,6 @@
 import {
   splitParagraphs, countWords, minutesToRead, minutesLeft, readPrefs, savePrefs, readPosition, savePosition, DEFAULT_READER_PREFS,
+  buildParagraphs, chunkOfWord,
 } from './readerUtils';
 
 beforeEach(() => localStorage.clear());
@@ -36,4 +37,22 @@ test('nhớ vị trí đọc theo truyện', () => {
   savePosition('b', 1, 2);
   expect(readPosition('a')).toEqual({ i: 7, r: 0.42 });
   expect(readPosition('b')).toEqual({ i: 1, r: 1 });
+});
+
+test('dựng đoạn văn từ danh sách từ, giữ chỉ số để tô sáng', () => {
+  // chunk 0: "A b\nC d" (xuống dòng trong chunk), chunk 1 bắt đầu đoạn mới, chunk 2 tách giữa một đoạn dài
+  const tokens = ['A', ' ', 'b', '\n', 'C', ' ', 'd', 'E', ' ', 'f', 'G', ' ', 'h'];
+  const paras = buildParagraphs(tokens, new Set([7]), new Set([10]));
+  expect(paras.map((p) => p.map((x) => x.t).join(''))).toEqual(['A b', 'C d', 'E f G h']);
+  expect(paras[0].map((x) => x.i)).toEqual([0, 1, 2]);
+  expect(paras[2].map((x) => x.i)).toEqual([7, 8, 9, -1, 10, 11, 12]);
+  expect(buildParagraphs([])).toEqual([]);
+});
+
+test('tìm chunk chứa một từ', () => {
+  expect(chunkOfWord([0, 40, 90], 0)).toBe(0);
+  expect(chunkOfWord([0, 40, 90], 39)).toBe(0);
+  expect(chunkOfWord([0, 40, 90], 40)).toBe(1);
+  expect(chunkOfWord([0, 40, 90], 500)).toBe(2);
+  expect(chunkOfWord([], 5)).toBe(0);
 });

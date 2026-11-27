@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2, RefreshCw } from 'lucide-react';
+import { Play, Upload, Loader, Volume2, Sun, Moon, Zap, Sparkles, Search, Globe, BookOpen, Trash2 } from 'lucide-react';
 import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listDriveFolder, driveFolderUrl, listLocalStories, loadLocalStory } from './sources';
 import MY_STORIES from './myStories';
 import Reader from './Reader';
+import { chunkOfWord } from './readerUtils';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -60,12 +61,10 @@ export default function StoryListenerApp() {
   const [chapters, setChapters] = useState([]);
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [showChapterList, setShowChapterList] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [webUrl, setWebUrl] = useState('');
   const [isLoadingWeb, setIsLoadingWeb] = useState(false);
   const [loadingDocId, setLoadingDocId] = useState(null);
-  const [isRefreshingDoc, setIsRefreshingDoc] = useState(false);
+  const [, setIsRefreshingDoc] = useState(false);
   const [notice, setNotice] = useState('');
   const [speechRate, setSpeechRate] = useState(1);
   const [voiceGender, setVoiceGender] = useState('female');
@@ -76,12 +75,6 @@ export default function StoryListenerApp() {
   const [currentWordIndex, setCurrentWordIndex] = useState(-1);
   const [autoNext, setAutoNext] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
-  const [fontSize, setFontSize] = useState(18);
-  // Chế độ xem truyện: 'read' = màn hình đọc toàn khung hình (mặc định), 'listen' = trình phát nghe.
-  const [viewMode, setViewMode] = useState(() => {
-    try { return localStorage.getItem('viewMode') === 'listen' ? 'listen' : 'read'; } catch (e) { return 'read'; }
-  });
-  useEffect(() => { try { localStorage.setItem('viewMode', viewMode); } catch (e) {} }, [viewMode]);
   
   const [ttsMode, setTtsMode] = useState('edge');
   const [isLoadingAudio, setIsLoadingAudio] = useState(false);
@@ -111,8 +104,6 @@ export default function StoryListenerApp() {
   const nextAudioRef = useRef(null); // 🆕 Audio thứ 2 để preload
   const utteranceRef = useRef(null);
   const fileInputRef = useRef(null);
-  const textContainerRef = useRef(null);
-  const wordRefs = useRef([]);
   const wakeLockRef = useRef(null); // 🆕 Wake Lock
   const silentAudioRef = useRef(null); // 🆕 Audio im lặng giữ session
   
@@ -394,18 +385,21 @@ export default function StoryListenerApp() {
   }, [currentChapterIndex, autoTranslate, translateEngine, currentChapterContent]);
 
   // ============ CHUNKS ============
-  const splitIntoChunks = useCallback((text, maxSize = MAX_CHUNK_SIZE) => {
+  // Chia chương thành các đoạn để đọc từng đoạn một. Mỗi đoạn kèm cờ endsParagraph: false khi đoạn bị cắt giữa chừng
+  // một đoạn văn dài (màn hình đọc dùng cờ này để biết chỗ nào xuống dòng, chỗ nào chỉ nối tiếp).
+  const splitIntoChunkInfo = useCallback((text, maxSize = MAX_CHUNK_SIZE) => {
     if (!text) return [];
     const paragraphs = text.split(/\n+/).filter(p => p.trim());
     const chunks = [];
+    const push = (t, endsParagraph) => { if (t.trim()) chunks.push({ text: t.trim(), endsParagraph }); };
     let cur = '';
     for (const para of paragraphs) {
       if (para.length > maxSize) {
-        if (cur) { chunks.push(cur.trim()); cur = ''; }
+        if (cur) { push(cur, true); cur = ''; }
         const sentences = para.split(/(?<=[.!?。！？])\s+/);
         for (const s of sentences) {
           if ((cur + s).length > maxSize && cur) {
-            chunks.push(cur.trim());
+            push(cur, false);
             cur = s;
           } else {
             cur += (cur ? ' ' : '') + s;
@@ -413,16 +407,20 @@ export default function StoryListenerApp() {
         }
       } else {
         if ((cur + para).length > maxSize && cur) {
-          chunks.push(cur.trim());
+          push(cur, true);
           cur = para;
         } else {
           cur += (cur ? '\n' : '') + para;
         }
       }
     }
-    if (cur.trim()) chunks.push(cur.trim());
-    return chunks.filter(c => c.length > 0);
+    push(cur, true);
+    return chunks;
   }, []);
+
+  const splitIntoChunks = useCallback((text, maxSize = MAX_CHUNK_SIZE) => (
+    splitIntoChunkInfo(text, maxSize).map(c => c.text)
+  ), [splitIntoChunkInfo]);
 
   const getChunksForChapter = useCallback((chapterIdx) => {
     const useText = (autoTranslate && translatedChapter && !isTranslating && chapterIdx === currentChapterIndex)
@@ -441,17 +439,20 @@ export default function StoryListenerApp() {
   }, []);
 
   const allWordsOfChapter = useMemo(() => {
-    if (chapters.length === 0) return { words: [], chunkOffsets: [] };
+    const empty = { words: [], chunkOffsets: [], breakStarts: new Set(), softStarts: new Set() };
+    if (chapters.length === 0) return empty;
     const displayText = (autoTranslate && translatedChapter) ? translatedChapter : chapters[currentChapterIndex]?.content || '';
-    const chunks = splitIntoChunks(displayText);
     const allWords = [];
     const chunkOffsets = [];
-    for (const chunk of chunks) {
+    const breakStarts = new Set(); // chỉ số từ đầu của đoạn mới (đoạn trước kết thúc cuối đoạn văn)
+    const softStarts = new Set(); // chỉ số từ đầu của đoạn nối tiếp giữa chừng một đoạn văn dài
+    splitIntoChunkInfo(displayText).forEach((chunk, k, all) => {
+      if (k > 0) (all[k - 1].endsParagraph ? breakStarts : softStarts).add(allWords.length);
       chunkOffsets.push(allWords.length);
-      allWords.push(...splitIntoWords(chunk));
-    }
-    return { words: allWords, chunkOffsets };
-  }, [currentChapterIndex, chapters, autoTranslate, translatedChapter, splitIntoChunks, splitIntoWords]);
+      allWords.push(...splitIntoWords(chunk.text));
+    });
+    return allWords.length ? { words: allWords, chunkOffsets, breakStarts, softStarts } : empty;
+  }, [currentChapterIndex, chapters, autoTranslate, translatedChapter, splitIntoChunkInfo, splitIntoWords]);
 
   // ============ EPUB ============
   const parseEpub = async (file) => {
@@ -912,18 +913,6 @@ export default function StoryListenerApp() {
     }
   }, [fetchChunkAudio, getChunksForChapter]);
 
-  const scrollToWord = useCallback((index) => {
-    if (!autoScroll || !wordRefs.current[index] || !textContainerRef.current) return;
-    const el = wordRefs.current[index];
-    const c = textContainerRef.current;
-    const wt = el.offsetTop;
-    const ch = c.clientHeight;
-    const st = c.scrollTop;
-    if (wt < st + 50 || wt > st + ch - 100) {
-      c.scrollTo({ top: wt - ch / 3, behavior: 'smooth' });
-    }
-  }, [autoScroll]);
-
   const startWordHighlight = useCallback(() => {
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     const update = () => {
@@ -946,12 +935,11 @@ export default function StoryListenerApp() {
           if (wc[i] >= target) { li = i; break; }
         }
         setCurrentWordIndex(wo + li);
-        scrollToWord(wo + li);
       }
       animationFrameRef.current = requestAnimationFrame(update);
     };
     animationFrameRef.current = requestAnimationFrame(update);
-  }, [scrollToWord]);
+  }, []);
 
   // 🆕 Cập nhật Media Session position
   const updateMediaPosition = useCallback(() => {
@@ -1143,7 +1131,6 @@ export default function StoryListenerApp() {
         }
         const gi = currentChunkWordOffsetRef.current + li;
         setCurrentWordIndex(gi);
-        setTimeout(() => scrollToWord(gi), 50);
       }
     };
     
@@ -1157,9 +1144,10 @@ export default function StoryListenerApp() {
     setIsPlaying(true);
     requestWakeLock();
     setupMediaSession(chaptersRef.current[chapterIdx]?.title, chapterIdx + 1, chaptersRef.current.length);
-  }, [getChunksForChapter, splitIntoWords, speechRate, voiceGender, scrollToWord, requestWakeLock, releaseWakeLock, setupMediaSession, ensureChapterLoaded]);
+  }, [getChunksForChapter, splitIntoWords, speechRate, voiceGender, requestWakeLock, releaseWakeLock, setupMediaSession, ensureChapterLoaded]);
 
-  const togglePlay = useCallback(() => {
+  // startChunk (tuỳ chọn): bắt đầu đọc từ đoạn này thay vì đoạn đang dừng.
+  const togglePlay = useCallback((startChunk) => {
     if (!chapters.length) return;
     if (isLoadingChapter || !chapters[currentChapterIndex]?.content) {
       setErrorMsg('Đang tải chương... vui lòng chờ');
@@ -1198,7 +1186,7 @@ export default function StoryListenerApp() {
       if (silentAudioRef.current) {
         silentAudioRef.current.play().catch(() => {});
       }
-      playChunk(currentChapterIndex, currentChunkIndex);
+      playChunk(currentChapterIndex, typeof startChunk === 'number' ? startChunk : currentChunkIndex);
     }
   }, [chapters, isLoadingChapter, isTranslating, isPlaying, isLoadingAudio, ttsMode, currentChapterIndex, currentChunkIndex, playChunk, releaseWakeLock, createSilentAudio]);
 
@@ -1245,12 +1233,9 @@ export default function StoryListenerApp() {
     stopAllAudio();
     setCurrentChapterIndex(idx);
     setCurrentChunkIndex(0);
-    setShowChapterList(false);
-    if (textContainerRef.current) textContainerRef.current.scrollTop = 0;
   };
 
   useEffect(() => {
-    if (textContainerRef.current) textContainerRef.current.scrollTop = 0;
     chunksCacheRef.current.clear();
   }, [currentChapterIndex]);
 
@@ -1277,15 +1262,13 @@ export default function StoryListenerApp() {
     (e.mode !== 'local' || localStories.some(s => s.slug === e.slug)));
 
   const currentChapter = chapters[currentChapterIndex] || {};
-  const { words: displayWords = [] } = allWordsOfChapter;
-  const chunksOfCurrentChapter = getChunksForChapter(currentChapterIndex);
+  const { words: chapterWords, chunkOffsets, breakStarts, softStarts } = allWordsOfChapter;
 
   // Đóng truyện đang mở, về trang chủ.
   const closeStory = () => {
     stopAllAudio();
     setChapters([]);
     setStory(null);
-    setShowSettings(false);
     audioCacheRef.current.forEach(url => URL.revokeObjectURL(url));
     audioCacheRef.current.clear();
     chunksCacheRef.current.clear();
@@ -1297,6 +1280,23 @@ export default function StoryListenerApp() {
   const readerText = readerNeedsTranslation ? translatedChapter : (currentChapter.content || '');
   const readerWaiting = isLoadingChapter || (readerNeedsTranslation && !translatedChapter);
   const canRefreshStory = story?.mode === 'gdoc' || story?.mode === 'gdrive';
+
+  // Bấm phát từ màn hình đọc: nếu đoạn đang dừng không còn nằm trên màn hình (bạn đã cuộn đi chỗ khác)
+  // thì đọc từ đoạn đang hiện ở đầu màn hình. `view` = { first, last }: chỉ số từ đầu / cuối đang hiện.
+  const playFromView = (view) => {
+    if (!isPlaying && !isLoadingAudio && view && chunkOffsets.length) {
+      const cur = Math.min(currentChunkIndex, chunkOffsets.length - 1);
+      const start = chunkOffsets[cur];
+      const end = cur + 1 < chunkOffsets.length ? chunkOffsets[cur + 1] : Infinity;
+      if (!(start <= view.last && end > view.first)) {
+        const k = chunkOfWord(chunkOffsets, view.first);
+        setCurrentChunkIndex(k);
+        togglePlay(k);
+        return;
+      }
+    }
+    togglePlay();
+  };
 
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} transition-colors duration-500`} style={{fontFamily: 'system-ui, -apple-system, sans-serif'}}>
@@ -1311,48 +1311,10 @@ export default function StoryListenerApp() {
             <button onClick={() => setDarkMode(!darkMode)} className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
               {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
-            {chapters.length > 0 && (
-              <>
-                <button onClick={() => { stopAllAudio(); setViewMode('read'); }} title="Chế độ đọc" aria-label="Chế độ đọc" className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
-                  <BookOpen className="w-5 h-5" />
-                </button>
-                <button onClick={() => setShowSettings(!showSettings)} className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
-                  <Settings className="w-5 h-5" />
-                </button>
-                <button onClick={() => setShowChapterList(!showChapterList)} className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
-                  <List className="w-5 h-5" />
-                </button>
-              </>
-            )}
           </div>
         </div>
 
-        {chapters.length > 0 && (
-          <div className={`${theme.card} border rounded-2xl p-3 mb-3 flex items-center justify-between`}>
-            <div className="flex items-center gap-2">
-              <Languages className={`w-5 h-5 ${autoTranslate ? theme.accent : theme.textMuted}`} />
-              <div>
-                <div className="text-sm font-semibold">Dịch AI tự động</div>
-                <div className={`text-xs ${theme.textMuted}`}>
-                  {autoTranslate ? (translateEngine === 'groq' ? '🤖 Groq AI' : '🌐 Google') : 'Đang tắt'}
-                </div>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              {autoTranslate && (
-                <button onClick={() => setTranslateEngine(translateEngine === 'groq' ? 'google' : 'groq')}
-                  className={`${theme.button} px-3 py-1.5 rounded-lg text-xs`}>
-                  Đổi {translateEngine === 'groq' ? 'Google' : 'Groq'}
-                </button>
-              )}
-              <button onClick={() => setAutoTranslate(!autoTranslate)}
-                className={`${autoTranslate ? theme.buttonPrimary : theme.button} px-4 py-1.5 rounded-lg text-sm font-semibold`}>
-                {autoTranslate ? 'BẬT' : 'TẮT'}
-              </button>
-            </div>
-          </div>
-        )}
-
+        {chapters.length === 0 && (
         <div className={`${theme.card} border rounded-2xl p-4 mb-4`}>
           <p className={`text-xs ${theme.textMuted} mb-2`}>🎤 Giọng đọc:</p>
           <div className="flex gap-2">
@@ -1374,15 +1336,16 @@ export default function StoryListenerApp() {
             </button>
           </div>
         </div>
+        )}
 
         {notice && (
-          <div className="bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 px-4 py-3 rounded-xl mb-4">
+          <div className="bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 px-4 py-3 rounded-xl mb-4 break-words">
             ✅ {notice}
           </div>
         )}
 
         {errorMsg && (
-          <div className="bg-red-500/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-xl mb-4">
+          <div className="bg-red-500/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-xl mb-4 break-words">
             ⚠️ {errorMsg}
           </div>
         )}
@@ -1540,13 +1503,16 @@ export default function StoryListenerApp() {
           </>
         )}
 
-        {chapters.length > 0 && viewMode === 'read' && (
+        {chapters.length > 0 && (
           <Reader
             storyKey={story?.sourceUrl || story?.title || 'story'}
             storyTitle={story?.title || ''}
             chapters={chapters}
             chapterIndex={currentChapterIndex}
             text={readerText}
+            words={readerNeedsTranslation && !translatedChapter ? [] : chapterWords}
+            breakStarts={breakStarts}
+            softStarts={softStarts}
             waiting={readerWaiting}
             waitingLabel={isTranslating ? `Đang dịch AI... ${translationProgress}%` : 'Đang tải chương...'}
             darkMode={darkMode}
@@ -1554,189 +1520,38 @@ export default function StoryListenerApp() {
             onNext={nextChapter}
             onSelectChapter={goToChapter}
             onExit={closeStory}
-            onListen={() => setViewMode('listen')}
             onRefresh={canRefreshStory ? () => refreshGoogleDoc({ quiet: true }) : undefined}
+            message={errorMsg ? { kind: 'error', text: errorMsg } : notice ? { kind: 'ok', text: notice } : null}
+            onDismissMessage={() => { setErrorMsg(''); setNotice(''); }}
+            audio={{
+              playing: isPlaying || isLoadingAudio,
+              busy: isLoadingAudio,
+              disabled: isTranslating || isLoadingChapter,
+              currentWordIndex,
+              onToggle: playFromView,
+              speechRate,
+              onSpeechRate: (v) => { setSpeechRate(v); audioCacheRef.current.clear(); },
+              voiceGender,
+              onVoiceGender: (g) => { setVoiceGender(g); audioCacheRef.current.clear(); },
+              autoScroll,
+              onAutoScroll: setAutoScroll,
+              autoNext,
+              onAutoNext: setAutoNext,
+              ttsMode,
+              onTtsMode: (m) => { stopAllAudio(); setTtsMode(m); },
+              autoTranslate,
+              onAutoTranslate: setAutoTranslate,
+              translateEngine,
+              onTranslateEngine: setTranslateEngine,
+              onClearTranslateCache: () => {
+                translateCacheRef.current.clear();
+                localStorage.removeItem('translate_cache');
+                setNotice('Đã xóa cache dịch');
+              },
+            }}
           />
         )}
 
-        {chapters.length > 0 && viewMode === 'listen' && (
-          <>
-            {showSettings && (
-              <div className={`${theme.card} border rounded-2xl p-5 mb-4 space-y-4`}>
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold">⚙️ Cài đặt</h3>
-                  <button onClick={() => setShowSettings(false)} className={`${theme.button} p-1 rounded`}><X className="w-4 h-4" /></button>
-                </div>
-                <div>
-                  <label className={`text-sm ${theme.textMuted} flex justify-between mb-1`}>
-                    <span>Tốc độ</span><span className={theme.accent}>{speechRate.toFixed(1)}x</span>
-                  </label>
-                  <input type="range" min="0.5" max="2" step="0.1" value={speechRate}
-                    onChange={(e) => { setSpeechRate(parseFloat(e.target.value)); audioCacheRef.current.clear(); }}
-                    className="w-full accent-amber-500" />
-                </div>
-                <div>
-                  <label className={`text-sm ${theme.textMuted} flex justify-between mb-1`}>
-                    <span>Cỡ chữ</span><span className={theme.accent}>{fontSize}px</span>
-                  </label>
-                  <input type="range" min="14" max="28" step="1" value={fontSize}
-                    onChange={(e) => setFontSize(parseInt(e.target.value))} className="w-full accent-amber-500" />
-                </div>
-                <div>
-                  <label className={`text-sm ${theme.textMuted} mb-1 block`}>Giọng</label>
-                  <div className="flex gap-2">
-                    <button onClick={() => { setVoiceGender('female'); audioCacheRef.current.clear(); }}
-                      className={`flex-1 py-2 rounded-lg ${voiceGender === 'female' ? theme.buttonPrimary : theme.button}`}>
-                      👩 {ttsMode === 'edge' ? 'Hoài My' : 'Nữ'}
-                    </button>
-                    <button onClick={() => { setVoiceGender('male'); audioCacheRef.current.clear(); }}
-                      className={`flex-1 py-2 rounded-lg ${voiceGender === 'male' ? theme.buttonPrimary : theme.button}`}>
-                      👨 {ttsMode === 'edge' ? 'Nam Minh' : 'Nam'}
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2.5 pt-2">
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm">📜 Tự động cuộn</span>
-                    <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="w-5 h-5 accent-amber-500" />
-                  </label>
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-sm">⏭️ Auto next chương</span>
-                    <input type="checkbox" checked={autoNext} onChange={(e) => setAutoNext(e.target.checked)} className="w-5 h-5 accent-amber-500" />
-                  </label>
-                </div>
-                <button onClick={closeStory}
-                  className={`w-full ${theme.button} py-2 rounded-lg text-sm`}>
-                  🔄 Tải truyện khác
-                </button>
-                <button onClick={() => {
-                    translateCacheRef.current.clear();
-                    localStorage.removeItem('translate_cache');
-                    setErrorMsg('Đã xóa cache dịch');
-                  }}
-                  className={`w-full ${theme.button} py-2 rounded-lg text-sm`}>
-                  🗑️ Xóa cache dịch
-                </button>
-              </div>
-            )}
-
-            {showChapterList && (
-              <div className={`${theme.card} border rounded-2xl mb-4 overflow-hidden`}>
-                <div className={`flex items-center justify-between p-4 border-b ${theme.border}`}>
-                  <h3 className="font-semibold">📑 Chương ({chapters.length})</h3>
-                  <button onClick={() => setShowChapterList(false)} className={`${theme.button} p-1 rounded`}><X className="w-4 h-4" /></button>
-                </div>
-                <div className="max-h-96 overflow-y-auto">
-                  {chapters.map((ch, idx) => (
-                    <button key={idx} onClick={() => goToChapter(idx)}
-                      className={`w-full text-left px-4 py-3 hover:opacity-80 ${idx === currentChapterIndex ? theme.chapterActive : ''}`}>
-                      <div className="font-medium">{ch.title}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {story && (
-              <div className={`${theme.card} border rounded-2xl p-3 mb-4 flex items-center gap-3`}>
-                {story.cover
-                  ? <img src={story.cover} alt="" referrerPolicy="no-referrer" className="w-12 h-16 object-cover rounded flex-shrink-0" />
-                  : <BookOpen className={`w-10 h-10 p-1 flex-shrink-0 ${theme.accent}`} />}
-                <div className="min-w-0 flex-1">
-                  <div className="font-semibold truncate">{story.title}</div>
-                  <div className={`text-xs ${theme.textMuted} truncate`}>
-                    {[story.author, story.site, (() => { try { return new URL(story.sourceUrl).hostname; } catch (e) { return ''; } })()].filter(Boolean).join(' • ')}
-                  </div>
-                </div>
-                {(story.mode === 'gdoc' || story.mode === 'gdrive') && (
-                  <button onClick={() => refreshGoogleDoc()} disabled={isRefreshingDoc} title="Tải lại danh sách chương từ Google Docs / Drive"
-                    className={`${theme.button} flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-50`}>
-                    <RefreshCw className={`w-4 h-4 ${isRefreshingDoc ? 'animate-spin' : ''}`} />
-                    {isRefreshingDoc ? 'Đang tải...' : 'Cập nhật chương'}
-                  </button>
-                )}
-              </div>
-            )}
-
-            <div className={`${theme.card} border rounded-2xl p-5 md:p-8 mb-4`}>
-              <div className={`mb-5 pb-4 border-b ${theme.border}`}>
-                <h2 className={`text-2xl md:text-3xl font-bold ${theme.accent} mb-1`}>{currentChapter.title}</h2>
-                <p className={`text-sm ${theme.textMuted}`}>
-                  Chương {currentChapterIndex + 1}/{chapters.length}
-                  {chunksOfCurrentChapter.length > 1 && (
-                    <span className="ml-2">• Phần {currentChunkIndex + 1}/{chunksOfCurrentChapter.length}</span>
-                  )}
-                  {autoTranslate && !isTranslating && translatedChapter && (
-                    <span className={`ml-2 px-2 py-0.5 rounded text-xs border ${theme.translateBadge}`}>🤖 Đã dịch</span>
-                  )}
-                </p>
-                {isTranslating && (
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className={theme.accent}>🤖 Đang dịch AI...</span>
-                      <span className={theme.accent}>{translationProgress}%</span>
-                    </div>
-                    <div className="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-amber-500 to-orange-600 transition-all duration-300"
-                        style={{ width: `${translationProgress}%` }}></div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div ref={textContainerRef}
-                className={`${theme.textBg} rounded-xl p-5 mb-6 overflow-y-auto`}
-                style={{ fontSize: `${fontSize}px`, lineHeight: 1.9, height: '45vh', minHeight: '320px', maxHeight: '500px' }}>
-                {isLoadingChapter && (
-                  <div className={`flex items-center justify-center gap-2 h-full ${theme.textMuted}`}>
-                    <Loader className="w-5 h-5 animate-spin" /> Đang tải chương...
-                  </div>
-                )}
-                <div className="whitespace-pre-wrap">
-                  {displayWords.map((word, idx) => (
-                    <span key={idx} ref={el => wordRefs.current[idx] = el}
-                      className={`transition-all duration-150 ${
-                        idx === currentWordIndex ? `${theme.highlight} px-1 rounded font-semibold` : idx < currentWordIndex ? theme.read : ''
-                      }`}>
-                      {word}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-center gap-3 md:gap-4">
-                <button onClick={prevChapter} disabled={currentChapterIndex === 0}
-                  className={`${theme.button} disabled:opacity-30 p-3 md:p-4 rounded-full hover:scale-110`}>
-                  <ChevronLeft className="w-6 h-6" />
-                </button>
-                <button onClick={togglePlay} disabled={isLoadingAudio || isTranslating || isLoadingChapter}
-                  className={`${theme.buttonPrimary} p-5 md:p-6 rounded-full hover:scale-110 shadow-xl disabled:opacity-50`}>
-                  {isLoadingAudio ? <Loader className="w-8 h-8 animate-spin" /> : isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
-                </button>
-                <button onClick={nextChapter} disabled={currentChapterIndex === chapters.length - 1}
-                  className={`${theme.button} disabled:opacity-30 p-3 md:p-4 rounded-full hover:scale-110`}>
-                  <ChevronRight className="w-6 h-6" />
-                </button>
-              </div>
-
-              <div className={`mt-4 flex flex-wrap gap-3 justify-center text-xs ${theme.textMuted}`}>
-                <span className="flex items-center gap-1">
-                  {ttsMode === 'edge' ? <Sparkles className="w-3 h-3" /> : <Zap className="w-3 h-3" />}
-                  {ttsMode === 'edge' ? 'Edge TTS' : 'Web Speech'}
-                </span>
-                {autoTranslate && <span>🤖 {translateEngine === 'groq' ? 'Groq' : 'Google'}</span>}
-                {autoScroll && <span>📜</span>}
-                {autoNext && <span>⏭️</span>}
-                <span>{speechRate.toFixed(1)}x</span>
-              </div>
-            </div>
-
-            <div className={`${theme.card} border rounded-xl p-3 text-center text-xs ${theme.textMuted}`}>
-              💡 <strong>Mẹo chạy nền:</strong> Dùng <strong>Edge TTS</strong> để nghe tốt khi tắt màn hình. 
-              Có thể điều khiển từ màn hình khóa (như Spotify).
-            </div>
-          </>
-        )}
       </div>
     </div>
   );

@@ -1,10 +1,10 @@
 // Hàm thuần cho màn hình đọc (Reader.js): tách đoạn, ước lượng thời gian đọc, lưu cài đặt / vị trí.
 
 export const READER_THEMES = {
-  paper: { label: 'Giấy', bg: '#f4ecd8', text: '#3b3226', muted: '#8a7b63', bar: '#ebe1c8', line: '#d9cdb0', accent: '#b45309' },
-  light: { label: 'Sáng', bg: '#ffffff', text: '#1f2937', muted: '#6b7280', bar: '#f3f4f6', line: '#e5e7eb', accent: '#c2410c' },
-  dark: { label: 'Tối', bg: '#1e232b', text: '#d4d8de', muted: '#8b94a1', bar: '#272d37', line: '#364050', accent: '#fbbf24' },
-  black: { label: 'Đen', bg: '#000000', text: '#b8bcc4', muted: '#6b7280', bar: '#111418', line: '#262b33', accent: '#f59e0b' },
+  paper: { label: 'Giấy', bg: '#f4ecd8', text: '#3b3226', muted: '#8a7b63', bar: '#ebe1c8', line: '#d9cdb0', accent: '#b45309', hl: 'rgba(180,83,9,0.28)', dim: '#a89a80' },
+  light: { label: 'Sáng', bg: '#ffffff', text: '#1f2937', muted: '#6b7280', bar: '#f3f4f6', line: '#e5e7eb', accent: '#c2410c', hl: 'rgba(234,88,12,0.22)', dim: '#9ca3af' },
+  dark: { label: 'Tối', bg: '#1e232b', text: '#d4d8de', muted: '#8b94a1', bar: '#272d37', line: '#364050', accent: '#fbbf24', hl: 'rgba(251,191,36,0.30)', dim: '#6b7280' },
+  black: { label: 'Đen', bg: '#000000', text: '#b8bcc4', muted: '#6b7280', bar: '#111418', line: '#262b33', accent: '#f59e0b', hl: 'rgba(245,158,11,0.30)', dim: '#4b5563' },
 };
 
 export const READER_FONTS = {
@@ -65,4 +65,34 @@ export function minutesLeft(words, ratio) {
   if (!words) return null;
   const left = Math.ceil((words * (1 - clamp(ratio, 0, 1))) / 220);
   return left;
+}
+
+// ============ ĐỌC + NGHE TRONG MỘT MÀN HÌNH ============
+// Trình phát chia chương thành các đoạn (chunk) rồi thành "từ" (kể cả khoảng trắng); chỉ số từ toàn chương dùng để tô sáng.
+// buildParagraphs dựng lại đoạn văn từ danh sách từ đó, giữ nguyên chỉ số để tô sáng đúng chỗ.
+//  - tokens: các từ của cả chương, nối theo thứ tự các chunk
+//  - breakStarts: chỉ số từ mở đầu một chunk mà chunk trước kết thúc ở cuối đoạn văn (xuống đoạn mới)
+//  - softStarts: chỉ số từ mở đầu một chunk tách giữa chừng một đoạn dài (chỉ thêm một dấu cách)
+// Trả về mảng đoạn; mỗi đoạn là mảng { t: chữ, i: chỉ số từ (-1 nếu chỉ là dấu cách thêm vào) }.
+export function buildParagraphs(tokens, breakStarts = new Set(), softStarts = new Set()) {
+  const paragraphs = [];
+  let cur = [];
+  const flush = () => { if (cur.length) paragraphs.push(cur); cur = []; };
+  tokens.forEach((t, i) => {
+    if (i > 0 && breakStarts.has(i)) flush();
+    if (i > 0 && softStarts.has(i)) cur.push({ t: ' ', i: -1 });
+    if (/^\s+$/.test(t) && t.includes('\n')) { flush(); return; }
+    cur.push({ t, i });
+  });
+  flush();
+  return paragraphs;
+}
+
+// Chunk chứa từ số `wordIndex` (chunkOffsets[k] là chỉ số từ đầu tiên của chunk k).
+export function chunkOfWord(chunkOffsets, wordIndex) {
+  let k = 0;
+  for (let j = 0; j < chunkOffsets.length; j++) {
+    if (chunkOffsets[j] <= wordIndex) k = j; else break;
+  }
+  return k;
 }
