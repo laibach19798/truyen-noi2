@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Play, Pause, ChevronLeft, ChevronRight, Upload, Loader, Volume2, Sun, Moon, List, X, Settings, Zap, Sparkles, Languages, Search, Globe, BookOpen, Trash2, RefreshCw } from 'lucide-react';
 import { loadFromUrl, loadChapter, searchStories, DEFAULT_SEARCH_ORIGIN, getCustomProxy, setCustomProxy, loadGoogleDoc, googleDocUrl, listDriveFolder, driveFolderUrl, listLocalStories, loadLocalStory } from './sources';
 import MY_STORIES from './myStories';
+import Reader from './Reader';
 
 // Server đọc/dịch dự phòng (Hugging Face). Ưu tiên /api/tts, /api/translate chạy cùng app trên Vercel.
 const EDGE_TTS_API = 'https://laibach-edge-tts-vietnamese.hf.space';
@@ -76,6 +77,11 @@ export default function StoryListenerApp() {
   const [autoNext, setAutoNext] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [fontSize, setFontSize] = useState(18);
+  // Chế độ xem truyện: 'read' = màn hình đọc toàn khung hình (mặc định), 'listen' = trình phát nghe.
+  const [viewMode, setViewMode] = useState(() => {
+    try { return localStorage.getItem('viewMode') === 'listen' ? 'listen' : 'read'; } catch (e) { return 'read'; }
+  });
+  useEffect(() => { try { localStorage.setItem('viewMode', viewMode); } catch (e) {} }, [viewMode]);
   
   const [ttsMode, setTtsMode] = useState('edge');
   const [isLoadingAudio, setIsLoadingAudio] = useState(false);
@@ -1274,6 +1280,24 @@ export default function StoryListenerApp() {
   const { words: displayWords = [] } = allWordsOfChapter;
   const chunksOfCurrentChapter = getChunksForChapter(currentChapterIndex);
 
+  // Đóng truyện đang mở, về trang chủ.
+  const closeStory = () => {
+    stopAllAudio();
+    setChapters([]);
+    setStory(null);
+    setShowSettings(false);
+    audioCacheRef.current.forEach(url => URL.revokeObjectURL(url));
+    audioCacheRef.current.clear();
+    chunksCacheRef.current.clear();
+    setTranslatedChapter('');
+  };
+
+  // Màn hình đọc: chữ gốc, hoặc bản dịch AI nếu đang bật dịch (truyện tiếng Trung).
+  const readerNeedsTranslation = autoTranslate && needsTranslation(currentChapter.content);
+  const readerText = readerNeedsTranslation ? translatedChapter : (currentChapter.content || '');
+  const readerWaiting = isLoadingChapter || (readerNeedsTranslation && !translatedChapter);
+  const canRefreshStory = story?.mode === 'gdoc' || story?.mode === 'gdrive';
+
   return (
     <div className={`min-h-screen ${theme.bg} ${theme.text} transition-colors duration-500`} style={{fontFamily: 'system-ui, -apple-system, sans-serif'}}>
       <div className="max-w-4xl mx-auto px-4 py-6 md:py-8">
@@ -1289,6 +1313,9 @@ export default function StoryListenerApp() {
             </button>
             {chapters.length > 0 && (
               <>
+                <button onClick={() => { stopAllAudio(); setViewMode('read'); }} title="Chế độ đọc" aria-label="Chế độ đọc" className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
+                  <BookOpen className="w-5 h-5" />
+                </button>
                 <button onClick={() => setShowSettings(!showSettings)} className={`${theme.button} p-2.5 rounded-full hover:scale-110`}>
                   <Settings className="w-5 h-5" />
                 </button>
@@ -1513,7 +1540,26 @@ export default function StoryListenerApp() {
           </>
         )}
 
-        {chapters.length > 0 && (
+        {chapters.length > 0 && viewMode === 'read' && (
+          <Reader
+            storyKey={story?.sourceUrl || story?.title || 'story'}
+            storyTitle={story?.title || ''}
+            chapters={chapters}
+            chapterIndex={currentChapterIndex}
+            text={readerText}
+            waiting={readerWaiting}
+            waitingLabel={isTranslating ? `Đang dịch AI... ${translationProgress}%` : 'Đang tải chương...'}
+            darkMode={darkMode}
+            onPrev={prevChapter}
+            onNext={nextChapter}
+            onSelectChapter={goToChapter}
+            onExit={closeStory}
+            onListen={() => setViewMode('listen')}
+            onRefresh={canRefreshStory ? () => refreshGoogleDoc({ quiet: true }) : undefined}
+          />
+        )}
+
+        {chapters.length > 0 && viewMode === 'listen' && (
           <>
             {showSettings && (
               <div className={`${theme.card} border rounded-2xl p-5 mb-4 space-y-4`}>
@@ -1559,16 +1605,7 @@ export default function StoryListenerApp() {
                     <input type="checkbox" checked={autoNext} onChange={(e) => setAutoNext(e.target.checked)} className="w-5 h-5 accent-amber-500" />
                   </label>
                 </div>
-                <button onClick={() => {
-                    stopAllAudio();
-                    setChapters([]);
-                    setStory(null);
-                    setShowSettings(false);
-                    audioCacheRef.current.forEach(url => URL.revokeObjectURL(url));
-                    audioCacheRef.current.clear();
-                    chunksCacheRef.current.clear();
-                    setTranslatedChapter('');
-                  }}
+                <button onClick={closeStory}
                   className={`w-full ${theme.button} py-2 rounded-lg text-sm`}>
                   🔄 Tải truyện khác
                 </button>
