@@ -13,6 +13,14 @@ test('tên truyện đứng trước tiêu đề chương trên cùng dòng', ()
   expect(chapters.map((c) => c.title)).toEqual(['Chương 3: BÀN LÀM VIỆC', 'Chương 4: GIÓ NGƯỢC']);
 });
 
+test('câu văn nhắc tới "chương N." không bị coi là tiêu đề', () => {
+  const text = 'Chương 1: Mực Tro\nĐây là nội dung chương 1. Nhân vật bước đi.\n\nChương 2: Tro Lạnh\nNhư đã kể ở chương 1: hắn rời trấn.\n';
+  expect(splitDocChapters(text)).toEqual([
+    { title: 'Chương 1: Mực Tro', content: 'Đây là nội dung chương 1. Nhân vật bước đi.' },
+    { title: 'Chương 2: Tro Lạnh', content: 'Như đã kể ở chương 1: hắn rời trấn.' },
+  ]);
+});
+
 test('tài liệu không có tiêu đề chương thành một chương', () => {
   expect(splitDocChapters('Một truyện ngắn.\nHết.')).toEqual([{ title: 'Toàn văn', content: 'Một truyện ngắn.\nHết.' }]);
   expect(splitDocChapters('  \n ')).toEqual([]);
